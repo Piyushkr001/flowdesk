@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 140" role="img" aria-label="FlowDesk">
+  <rect width="760" height="140" fill="none"/>
+
+  <!-- icon -->
+  <g transform="translate(18,22)" fill="none">
+    <path d="M8 22c8 0 8-8 16-8s8 8 16 8 8-8 16-8" stroke="#0f172a" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M8 32c8 0 8-8 16-8s8 8 16 8 8-8 16-8" stroke="#0f172a" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
+    <path d="M8 42c8 0 8-8 16-8s8 8 16 8 8-8 16-8" stroke="#0f172a" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" opacity="0.75"/>
+    <path d="M14 52h36" stroke="#0f172a" stroke-width="4" stroke-linecap="round"/>
+    <path d="M18 52v10" stroke="#0f172a" stroke-width="4" stroke-linecap="round"/>
+    <path d="M46 52v10" stroke="#0f172a" stroke-width="4" stroke-linecap="round"/>
+  </g>
+
+  <!-- wordmark -->
+  <text x="120" y="94"
+        font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial"
+        font-size="78" font-weight="800" letter-spacing="-1.6">
+    <tspan fill="#0f172a">Flow</tspan>
+    <tspan fill="#0ea5e9">Desk</tspan>
+  </text>
+</svg>
