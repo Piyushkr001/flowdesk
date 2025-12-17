@@ -3,13 +3,27 @@
 import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import axios from "axios";
 import toast from "react-hot-toast";
-import { Eye, EyeOff, Loader2, CheckCircle2, ShieldCheck, Zap } from "lucide-react";
+import {
+  Eye,
+  EyeOff,
+  Loader2,
+  CheckCircle2,
+  ShieldCheck,
+  Zap,
+} from "lucide-react";
 
 import GoogleLoginButton from "../_components/GoogleLoginButton";
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
@@ -18,6 +32,12 @@ import { Checkbox } from "@/components/ui/checkbox";
 function apiBase() {
   return process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "";
 }
+
+// Optional: reusable axios instance
+const api = axios.create({
+  baseURL: apiBase(), // "" => same-origin (recommended if API is same Next app)
+  withCredentials: true,
+});
 
 export default function SignupPage() {
   const router = useRouter();
@@ -34,26 +54,24 @@ export default function SignupPage() {
 
     if (!name.trim()) return toast.error("Please enter your name.");
     if (!email.trim()) return toast.error("Please enter your email.");
-    if (password.trim().length < 6) return toast.error("Password must be at least 6 characters.");
+    if (password.trim().length < 6)
+      return toast.error("Password must be at least 6 characters.");
     if (!accept) return toast.error("Please accept the Terms and Privacy Policy.");
 
     setLoading(true);
-
     const loadingId = toast.loading("Creating your account...");
 
     try {
-      const res = await fetch(`${apiBase()}/api/v1/auth/register`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ name, email, password }),
+      const { data } = await api.post("/api/v1/auth/register", {
+        name,
+        email,
+        password,
       });
 
-      const data = await res.json().catch(() => null);
-
-      if (!res.ok) {
+      if (!data?.ok) {
         toast.dismiss(loadingId);
-        return toast.error(data?.message || "Sign up failed. Please try again.");
+        toast.error("Sign up failed. Please try again.");
+        return;
       }
 
       toast.dismiss(loadingId);
@@ -61,9 +79,15 @@ export default function SignupPage() {
 
       router.push("/dashboard");
       router.refresh();
-    } catch {
+    } catch (err: any) {
       toast.dismiss(loadingId);
-      toast.error("Network error. Please try again.");
+
+      const msg =
+        err?.response?.data?.message ||
+        err?.message ||
+        "Network error. Please try again.";
+
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -97,7 +121,9 @@ export default function SignupPage() {
                   <ShieldCheck className="h-5 w-5" />
                 </div>
                 <div>
-                  <div className="font-semibold text-slate-900 dark:text-slate-50">Security-first</div>
+                  <div className="font-semibold text-slate-900 dark:text-slate-50">
+                    Security-first
+                  </div>
                   <div className="text-sm text-slate-600 dark:text-slate-300">
                     Password hashing + cookie-based sessions support.
                   </div>
@@ -111,7 +137,9 @@ export default function SignupPage() {
             <Card className="w-full max-w-md rounded-2xl border-black/5 bg-white/70 backdrop-blur dark:border-white/10 dark:bg-slate-950/40">
               <CardHeader>
                 <CardTitle className="text-xl">Sign Up</CardTitle>
-                <CardDescription>Create your account to start using FlowDesk.</CardDescription>
+                <CardDescription>
+                  Create your account to start using FlowDesk.
+                </CardDescription>
               </CardHeader>
 
               <CardContent>
@@ -161,7 +189,11 @@ export default function SignupPage() {
                         onClick={() => setShowPass((v) => !v)}
                         aria-label={showPass ? "Hide password" : "Show password"}
                       >
-                        {showPass ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                        {showPass ? (
+                          <EyeOff className="h-4 w-4" />
+                        ) : (
+                          <Eye className="h-4 w-4" />
+                        )}
                       </Button>
                     </div>
                   </div>
@@ -172,13 +204,22 @@ export default function SignupPage() {
                       checked={accept}
                       onCheckedChange={(v) => setAccept(Boolean(v))}
                     />
-                    <Label htmlFor="accept" className="text-sm text-slate-600 dark:text-slate-300 leading-5">
+                    <Label
+                      htmlFor="accept"
+                      className="text-sm text-slate-600 dark:text-slate-300 leading-5"
+                    >
                       I agree to the{" "}
-                      <Link href="/terms" className="font-semibold text-sky-700 hover:underline dark:text-sky-300">
+                      <Link
+                        href="/terms"
+                        className="font-semibold text-sky-700 hover:underline dark:text-sky-300"
+                      >
                         Terms
                       </Link>{" "}
                       and{" "}
-                      <Link href="/privacy" className="font-semibold text-sky-700 hover:underline dark:text-sky-300">
+                      <Link
+                        href="/privacy"
+                        className="font-semibold text-sky-700 hover:underline dark:text-sky-300"
+                      >
                         Privacy Policy
                       </Link>
                       .
@@ -214,7 +255,10 @@ export default function SignupPage() {
 
                   <p className="text-sm text-slate-600 dark:text-slate-300">
                     Already have an account?{" "}
-                    <Link href="/login" className="font-semibold text-sky-700 hover:underline dark:text-sky-300">
+                    <Link
+                      href="/login"
+                      className="font-semibold text-sky-700 hover:underline dark:text-sky-300"
+                    >
                       Login
                     </Link>
                   </p>

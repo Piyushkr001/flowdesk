@@ -6,6 +6,7 @@ import {
   timestamp,
   boolean,
   uniqueIndex,
+  pgEnum,
 } from "drizzle-orm/pg-core";
 
 export const users = pgTable(
@@ -34,14 +35,11 @@ export const accounts = pgTable(
   "accounts",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-
-    provider: varchar("provider", { length: 50 }).notNull(), // "google"
-    providerAccountId: varchar("provider_account_id", { length: 255 }).notNull(), // Google "sub"
-
+    provider: varchar("provider", { length: 50 }).notNull(),
+    providerAccountId: varchar("provider_account_id", { length: 255 }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
@@ -49,5 +47,72 @@ export const accounts = pgTable(
       t.provider,
       t.providerAccountId
     ),
+  })
+);
+
+// ✅ Updated enums to match requirement
+export const taskStatus = pgEnum("task_status", [
+  "todo",
+  "in_progress",
+  "review",
+  "completed",
+]);
+
+export const taskPriority = pgEnum("task_priority", [
+  "low",
+  "medium",
+  "high",
+  "urgent",
+]);
+
+export const tasks = pgTable("tasks", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  title: varchar("title", { length: 100 }).notNull(),
+  description: text("description").notNull().default(""),
+
+  status: taskStatus("status").notNull().default("todo"),
+  priority: taskPriority("priority").notNull().default("medium"),
+
+  dueAt: timestamp("due_at", { withTimezone: true }).notNull(),
+
+  assigneeId: uuid("assignee_id")
+    .notNull()
+    .references(() => users.id),
+
+  creatorId: uuid("creator_id")
+    .notNull()
+    .references(() => users.id),
+
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+
+export const notifications = pgTable("notifications", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  title: text("title").notNull(),
+  body: text("body"),
+  read: boolean("read").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const notificationPrefs = pgTable(
+  "notification_prefs",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+
+    taskAssigned: boolean("task_assigned").notNull().default(true),
+    taskUpdated: boolean("task_updated").notNull().default(true),
+    dueSoon: boolean("due_soon").notNull().default(true),
+    system: boolean("system").notNull().default(true),
+
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    userUnique: uniqueIndex("notification_prefs_user_unique").on(t.userId),
   })
 );

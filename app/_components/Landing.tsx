@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
+import axios from "axios";
 import {
   CheckCircle2,
   Sparkles,
@@ -17,7 +18,50 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 
+type SessionUser = {
+  id: string;
+  name: string;
+  email: string;
+  image?: string | null;
+};
+
+function apiBase() {
+  return process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "";
+}
+
 export default function LandingPage() {
+  const [user, setUser] = React.useState<SessionUser | null>(null);
+  const [authLoading, setAuthLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    let mounted = true;
+
+    async function loadMe() {
+      try {
+        const { data } = await axios.get(`${apiBase()}/api/v1/auth/me`, {
+          withCredentials: true,
+          headers: { "Cache-Control": "no-store" },
+        });
+        if (!mounted) return;
+        setUser(data?.user ?? null);
+      } catch {
+        if (!mounted) return;
+        setUser(null);
+      } finally {
+        if (!mounted) return;
+        setAuthLoading(false);
+      }
+    }
+
+    loadMe();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const isLoggedIn = !!user;
+  const disableCreate = authLoading || isLoggedIn;
+
   return (
     <main className="min-h-[calc(100vh-64px)] bg-linear-to-b from-sky-50 via-white to-indigo-50 dark:from-slate-950 dark:via-slate-950 dark:to-slate-900">
       {/* HERO */}
@@ -45,14 +89,22 @@ export default function LandingPage() {
             </p>
 
             <div className="mt-7 flex flex-col sm:flex-row gap-3">
+              {/* ✅ Disabled when logged in */}
               <Button
-                asChild
+                asChild={!disableCreate}
                 size="lg"
                 className="rounded-xl bg-linear-to-r from-sky-500 to-indigo-600 text-white hover:opacity-95"
+                disabled={disableCreate}
               >
-                <Link href="/signup">
-                  Get Started <ArrowRight className="ml-2 h-5 w-5" />
-                </Link>
+                {disableCreate ? (
+                  <span className="inline-flex items-center">
+                    {authLoading ? "Checking..." : "Already Logged In"}
+                  </span>
+                ) : (
+                  <Link href="/signup">
+                    Get Started <ArrowRight className="ml-2 h-5 w-5" />
+                  </Link>
+                )}
               </Button>
 
               <Button asChild size="lg" variant="outline" className="rounded-xl">
@@ -229,16 +281,24 @@ export default function LandingPage() {
                   a modern dashboard.
                 </p>
               </div>
+
               <div className="flex flex-col sm:flex-row gap-3 w-full lg:w-auto">
+                {/* ✅ Disabled when logged in */}
                 <Button
-                  asChild
+                  asChild={!disableCreate}
                   size="lg"
                   className="rounded-xl bg-linear-to-r from-sky-500 to-indigo-600 text-white hover:opacity-95"
+                  disabled={disableCreate}
                 >
-                  <Link href="/signup">
-                    Create Account <ArrowRight className="ml-2 h-5 w-5" />
-                  </Link>
+                  {disableCreate ? (
+                    <span>{authLoading ? "Checking..." : "Already Logged In"}</span>
+                  ) : (
+                    <Link href="/signup">
+                      Create Account <ArrowRight className="ml-2 h-5 w-5" />
+                    </Link>
+                  )}
                 </Button>
+
                 <Button asChild size="lg" variant="outline" className="rounded-xl">
                   <Link href="/contact">Talk to Us</Link>
                 </Button>

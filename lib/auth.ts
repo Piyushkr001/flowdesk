@@ -1,5 +1,5 @@
 import { cookies } from "next/headers";
-import type { NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { SignJWT, jwtVerify } from "jose";
 
 const COOKIE_NAME = "flowdesk_session";

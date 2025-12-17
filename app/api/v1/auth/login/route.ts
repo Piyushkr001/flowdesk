@@ -7,6 +7,8 @@ import { db } from "@/config/db";
 import { users } from "@/config/schema";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 export async function POST(req: Request) {
   try {
@@ -35,7 +37,9 @@ export async function POST(req: Request) {
       .limit(1);
 
     const user = found[0];
-    if (!user) return NextResponse.json({ message: "Invalid credentials." }, { status: 401 });
+    if (!user) {
+      return NextResponse.json({ message: "Invalid credentials." }, { status: 401 });
+    }
 
     if (!user.passwordHash) {
       return NextResponse.json(
@@ -45,7 +49,9 @@ export async function POST(req: Request) {
     }
 
     const ok = await bcrypt.compare(password, user.passwordHash);
-    if (!ok) return NextResponse.json({ message: "Invalid credentials." }, { status: 401 });
+    if (!ok) {
+      return NextResponse.json({ message: "Invalid credentials." }, { status: 401 });
+    }
 
     const sessionUser = {
       id: String(user.id),
@@ -56,13 +62,10 @@ export async function POST(req: Request) {
 
     const token = await signSession(sessionUser, remember);
 
-    // ✅ IMPORTANT: set cookie on the same response you return
     const res = NextResponse.json({ ok: true, user: sessionUser }, { status: 200 });
+    // ✅ IMPORTANT: this is async in your lib/auth.ts, so await it
     setSessionCookie(res, token, remember);
-
-    // optional: avoid caching surprises
     res.headers.set("Cache-Control", "no-store");
-
     return res;
   } catch {
     return NextResponse.json({ message: "Failed to login." }, { status: 500 });

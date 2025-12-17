@@ -2,5 +2,5 @@
 import { Toaster } from "react-hot-toast";
 
 export function AppToaster() {
-  return <Toaster position="top-right" toastOptions={{ duration: 3500 }} />;
+  return <Toaster position="top-center" toastOptions={{ duration: 3500 }} />;
 }

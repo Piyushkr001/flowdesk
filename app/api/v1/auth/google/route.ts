@@ -124,7 +124,7 @@ export async function POST(req: Request) {
       });
     }
 
-    // 4) Issue session cookie (✅ set on response)
+    // 4) Issue session cookie
     const sessionUser = {
       id: String(user.id),
       email: String(user.email),
@@ -135,7 +135,8 @@ export async function POST(req: Request) {
     const token = await signSession(sessionUser, remember);
 
     const res = NextResponse.json({ ok: true, user: sessionUser }, { status: 200 });
-    setSessionCookie(res, token, remember);
+    // ✅ FIX: your lib/auth.ts sets cookies via next/headers cookies()
+    await setSessionCookie(res, token, remember);
     res.headers.set("Cache-Control", "no-store");
     return res;
   } catch (err) {

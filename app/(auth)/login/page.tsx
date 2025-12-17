@@ -3,6 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import axios from "axios";
 import toast from "react-hot-toast";
 import { Eye, EyeOff, Loader2, ShieldCheck, Users, Zap } from "lucide-react";
 
@@ -24,6 +25,12 @@ import { Checkbox } from "@/components/ui/checkbox";
 function apiBase() {
   return process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "";
 }
+
+// Optional: reusable axios instance
+const api = axios.create({
+  baseURL: apiBase(), // "" means same-origin (recommended if API is in the same Next app)
+  withCredentials: true,
+});
 
 export default function LoginPage() {
   const router = useRouter();
@@ -47,18 +54,16 @@ export default function LoginPage() {
     const loadingId = toast.loading("Signing you in...");
 
     try {
-      const res = await fetch(`${apiBase()}/api/v1/auth/login`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ email, password, remember }),
+      const { data } = await api.post("/api/v1/auth/login", {
+        email,
+        password,
+        remember,
       });
 
-      const data = await res.json().catch(() => null);
-
-      if (!res.ok) {
+      // If your API returns { ok: true, user: ... }
+      if (!data?.ok) {
         toast.dismiss(loadingId);
-        toast.error(data?.message || "Login failed. Please check your credentials.");
+        toast.error("Login failed. Please check your credentials.");
         return;
       }
 
@@ -67,9 +72,16 @@ export default function LoginPage() {
 
       router.push("/dashboard");
       router.refresh();
-    } catch {
+    } catch (err: any) {
       toast.dismiss(loadingId);
-      toast.error("Network error. Please try again.");
+
+      // axios error message from API
+      const msg =
+        err?.response?.data?.message ||
+        err?.message ||
+        "Network error. Please try again.";
+
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -254,7 +266,9 @@ function FeatureRow({
         {icon}
       </div>
       <div>
-        <div className="font-semibold text-slate-900 dark:text-slate-50">{title}</div>
+        <div className="font-semibold text-slate-900 dark:text-slate-50">
+          {title}
+        </div>
         <div className="text-sm text-slate-600 dark:text-slate-300">{desc}</div>
       </div>
     </div>

@@ -7,6 +7,8 @@ import { db } from "@/config/db";
 import { users } from "@/config/schema";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 export async function POST(req: Request) {
   try {
@@ -15,7 +17,7 @@ export async function POST(req: Request) {
     const name = String(body?.name ?? "").trim();
     const email = String(body?.email ?? "").trim().toLowerCase();
     const password = String(body?.password ?? "");
-    const remember = Boolean(body?.remember ?? true); // ✅ optional, matches login behavior
+    const remember = Boolean(body?.remember ?? true);
 
     if (!name) {
       return NextResponse.json({ message: "Name is required." }, { status: 400 });
@@ -65,7 +67,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: "Failed to create user." }, { status: 500 });
     }
 
-    // ✅ create session payload (ensures correct types)
     const sessionUser = {
       id: String(createdUser.id),
       name: String(createdUser.name ?? "User"),
@@ -75,15 +76,11 @@ export async function POST(req: Request) {
 
     const token = await signSession(sessionUser, remember);
 
-    // ✅ IMPORTANT: set cookie on the response that you return
-    const res = NextResponse.json(
-      { ok: true, user: sessionUser },
-      { status: 201 }
-    );
-
-    setSessionCookie(res, token, remember);
+    // ✅ IMPORTANT: your lib/auth.ts sets cookies via next/headers cookies()
+    // so call it directly and await it
+    const res = NextResponse.json({ ok: true, user: sessionUser }, { status: 201 });
     res.headers.set("Cache-Control", "no-store");
-
+    setSessionCookie(res, token, remember);
     return res;
   } catch {
     return NextResponse.json({ message: "Failed to register." }, { status: 500 });
