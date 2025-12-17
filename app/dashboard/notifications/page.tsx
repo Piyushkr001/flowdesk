@@ -85,9 +85,11 @@ function formatTime(ts: string) {
   return d.toLocaleString();
 }
 
-export default function NotificationsPage() {
-  const base = apiBase();
+function clampTotalPages(total: number, pageSize: number) {
+  return Math.max(1, Math.ceil(Math.max(0, total) / Math.max(1, pageSize)));
+}
 
+export default function NotificationsPage() {
   const [items, setItems] = React.useState<Notification[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
@@ -117,15 +119,8 @@ export default function NotificationsPage() {
     system: true,
   });
 
-  // ✅ realtime ping (reuse your SSE)
-  const [tick, setTick] = React.useState(0);
-  React.useEffect(() => {
-    const url = `${base}/api/v1/realtime/dashboard`;
-    const es = new EventSource(url, { withCredentials: true } as any);
-    es.onmessage = () => setTick((t) => t + 1);
-    es.onerror = () => {};
-    return () => es.close();
-  }, [base]);
+  // show banner when new notifications arrive while not on page 1 / filtered / searching
+  const [hasNew, setHasNew] = React.useState(false);
 
   const unreadCount = React.useMemo(() => items.filter((n) => !n.read).length, [items]);
 
@@ -145,9 +140,8 @@ export default function NotificationsPage() {
         });
 
         setItems(Array.isArray(data?.notifications) ? data.notifications : []);
-        setPagination(
-          data?.pagination ?? { page, pageSize, total: 0, totalPages: 1 }
-        );
+        setPagination(data?.pagination ?? { page, pageSize, total: 0, totalPages: 1 });
+        setHasNew(false);
       } catch (err: any) {
         setItems([]);
         setPagination({ page, pageSize, total: 0, totalPages: 1 });
@@ -167,7 +161,7 @@ export default function NotificationsPage() {
   React.useEffect(() => {
     loadNotifications();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadNotifications, tick]);
+  }, [loadNotifications]);
 
   async function loadPrefs() {
     setPrefsLoading(true);
@@ -207,14 +201,18 @@ export default function NotificationsPage() {
 
   async function toggleRead(id: string, nextRead: boolean) {
     const tId = toast.loading(nextRead ? "Marking as read..." : "Marking as unread...");
+
+    // optimistic UI
+    setItems((prev) => prev.map((n) => (n.id === id ? { ...n, read: nextRead } : n)));
+
     try {
       await api.patch(`/api/v1/notifications/${id}`, { read: nextRead });
       toast.dismiss(tId);
       toast.success(nextRead ? "Marked as read." : "Marked as unread.");
-      await loadNotifications({ silent: true });
     } catch (err: any) {
       toast.dismiss(tId);
       toast.error(err?.response?.data?.message || "Update failed.");
+      await loadNotifications({ silent: true });
     }
   }
 
@@ -255,19 +253,157 @@ export default function NotificationsPage() {
     if (!ok) return;
 
     const tId = toast.loading("Deleting...");
+
+    // optimistic UI
+    setItems((prev) => prev.filter((n) => n.id !== id));
+    setPagination((p) => {
+      const total = Math.max(0, p.total - 1);
+      const totalPages = clampTotalPages(total, p.pageSize);
+      const nextPage = Math.min(p.page, totalPages);
+      return { ...p, total, totalPages, page: nextPage };
+    });
+
     try {
       await api.delete(`/api/v1/notifications/${id}`);
       toast.dismiss(tId);
       toast.success("Deleted.");
-      await loadNotifications({ silent: true });
     } catch (err: any) {
       toast.dismiss(tId);
       toast.error(err?.response?.data?.message || "Failed to delete.");
+      await loadNotifications({ silent: true });
     }
   }
 
   const canPrev = pagination.page > 1;
   const canNext = pagination.page < pagination.totalPages;
+
+  /**
+   * ✅ Socket.io realtime (replaces SSE ping-refetch)
+   *
+   * Expected events from realtime server:
+   * - notification:new { notification }
+   * - notification:updated { notification }
+   * - notification:deleted { id }
+   */
+  React.useEffect(() => {
+    let socket: any;
+    let isMounted = true;
+
+    async function connect() {
+      const realtimeUrl = process.env.NEXT_PUBLIC_REALTIME_URL;
+      if (!realtimeUrl) return;
+
+      try {
+        // lazily import to reduce bundle
+        const { io } = await import("socket.io-client");
+
+        // OPTIONAL (recommended): fetch a short-lived realtime token
+        let token = "";
+        try {
+          const { data } = await api.get("/api/v1/realtime/token");
+          token = typeof data?.token === "string" ? data.token : "";
+        } catch {
+          // If you haven't created /api/v1/realtime/token yet, keep token empty.
+        }
+
+        socket = io(realtimeUrl, {
+          transports: ["websocket"],
+          withCredentials: false,
+          auth: token ? { token } : undefined,
+        });
+
+        socket.on("connect_error", (e: any) => {
+          // Avoid spamming toasts; show once if needed
+          // console.error("socket connect_error", e);
+        });
+
+        socket.on("notification:new", (payload: any) => {
+          const n: Notification | undefined = payload?.notification;
+          if (!n || !isMounted) return;
+
+          // If user is searching / filtering / not on page 1, show banner instead of mutating list
+          const blockedByView =
+            page !== 1 ||
+            qDebounced.length > 0 ||
+            filter === "read"; // new notif likely unread
+
+          if (blockedByView) {
+            setHasNew(true);
+            toast.success("New notification received.");
+            // update totals so header feels live
+            setPagination((p) => {
+              const total = p.total + 1;
+              const totalPages = clampTotalPages(total, p.pageSize);
+              return { ...p, total, totalPages };
+            });
+            return;
+          }
+
+          setItems((prev) => {
+            if (prev.some((x) => x.id === n.id)) return prev;
+            // if filter=unread, keep only unread
+            const next = filter === "unread" ? [n, ...prev.filter((x) => !x.read)] : [n, ...prev];
+            return next.slice(0, pageSize);
+          });
+
+          setPagination((p) => {
+            const total = p.total + 1;
+            const totalPages = clampTotalPages(total, p.pageSize);
+            return { ...p, total, totalPages };
+          });
+
+          toast.success("New notification received.");
+        });
+
+        socket.on("notification:updated", (payload: any) => {
+          const n: Notification | undefined = payload?.notification;
+          if (!n || !isMounted) return;
+
+          setItems((prev) => {
+            const idx = prev.findIndex((x) => x.id === n.id);
+            if (idx === -1) return prev;
+            const copy = prev.slice();
+            copy[idx] = n;
+
+            // keep view-consistency for unread filter
+            if (filter === "unread") {
+              return copy.filter((x) => !x.read);
+            }
+            if (filter === "read") {
+              return copy.filter((x) => x.read);
+            }
+            return copy;
+          });
+        });
+
+        socket.on("notification:deleted", (payload: any) => {
+          const id = payload?.id;
+          if (!id || !isMounted) return;
+
+          setItems((prev) => prev.filter((x) => x.id !== id));
+          setPagination((p) => {
+            const total = Math.max(0, p.total - 1);
+            const totalPages = clampTotalPages(total, p.pageSize);
+            const nextPage = Math.min(p.page, totalPages);
+            return { ...p, total, totalPages, page: nextPage };
+          });
+        });
+      } catch {
+        // ignore; page still works via manual refresh
+      }
+    }
+
+    connect();
+
+    return () => {
+      isMounted = false;
+      try {
+        socket?.disconnect();
+      } catch {}
+    };
+    // IMPORTANT: connect once; do not depend on page/filter/qDebounced to avoid reconnect loops
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <main className="min-h-[calc(100vh-64px)] px-4 sm:px-6 lg:px-8 py-8">
@@ -290,7 +426,7 @@ export default function NotificationsPage() {
               )}
             </div>
             <p className="text-sm text-muted-foreground">
-              Updates and assignments. Auto-refreshes when realtime pings arrive.
+              Updates and assignments. Realtime via Socket.io.
             </p>
           </div>
 
@@ -315,6 +451,28 @@ export default function NotificationsPage() {
             </Button>
           </div>
         </div>
+
+        {/* New banner */}
+        {hasNew ? (
+          <Card className="mt-4 rounded-2xl border-black/5 dark:border-white/10 bg-white/70 dark:bg-slate-950/40 backdrop-blur">
+            <CardContent className="py-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="text-sm">
+                New notifications arrived. Go to page 1 (and clear filters/search) to see them.
+              </div>
+              <Button
+                className="rounded-xl"
+                onClick={async () => {
+                  setQ("");
+                  setFilter("all");
+                  setPage(1);
+                  await loadNotifications({ silent: true });
+                }}
+              >
+                Show new
+              </Button>
+            </CardContent>
+          </Card>
+        ) : null}
 
         {/* Filter */}
         <Card className="mt-6 rounded-2xl border-black/5 dark:border-white/10 bg-white/70 dark:bg-slate-950/40 backdrop-blur">

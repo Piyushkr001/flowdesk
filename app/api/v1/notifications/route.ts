@@ -9,59 +9,70 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
+function noStoreJson(data: any, status = 200) {
+  const res = NextResponse.json(data, { status });
+  res.headers.set("Cache-Control", "no-store");
+  return res;
+}
+
+function parseIntSafe(v: string | null, fallback: number) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
 export async function GET(req: Request) {
   const session = await getSession();
-  if (!session) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
+  if (!session) return noStoreJson({ message: "Unauthorized" }, 401);
 
   const url = new URL(req.url);
-
   const q = url.searchParams.get("q")?.trim() || "";
-  const readParam = url.searchParams.get("read"); // "true" | "false" | null
 
-  const page = Math.max(1, Number(url.searchParams.get("page") || 1));
-  const pageSizeRaw = Number(url.searchParams.get("pageSize") || 20);
-  const pageSize = Math.min(50, Math.max(10, pageSizeRaw));
+  // read can be "true"/"false"
+  const readParam = url.searchParams.get("read");
+  const read =
+    readParam === null ? null : readParam === "true" ? true : readParam === "false" ? false : null;
+
+  const page = parseIntSafe(url.searchParams.get("page"), 1);
+  const pageSizeRaw = parseIntSafe(url.searchParams.get("pageSize"), 20);
+  const pageSize = Math.min(100, Math.max(1, pageSizeRaw));
+  const offset = (page - 1) * pageSize;
 
   const whereParts: any[] = [eq(notifications.userId, session.id)];
+
+  if (typeof read === "boolean") whereParts.push(eq(notifications.read, read));
 
   if (q) {
     whereParts.push(
       or(
         ilike(notifications.title, `%${q}%`),
-        ilike(notifications.body, `%${q}%`)
+        ilike(sql`coalesce(${notifications.body}, '')`, `%${q}%`)
       )
     );
   }
 
-  if (readParam === "true") whereParts.push(eq(notifications.read, true));
-  if (readParam === "false") whereParts.push(eq(notifications.read, false));
+  const whereClause = and(...whereParts);
 
-  const where = and(...whereParts);
-
-  const countRows = await db
+  const [countRow] = await db
     .select({ count: sql<number>`count(*)` })
     .from(notifications)
-    .where(where);
-
-  const total = Number(countRows?.[0]?.count || 0);
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const safePage = Math.min(page, totalPages);
+    .where(whereClause);
 
   const rows = await db
     .select()
     .from(notifications)
-    .where(where)
+    .where(whereClause)
     .orderBy(desc(notifications.createdAt))
     .limit(pageSize)
-    .offset((safePage - 1) * pageSize);
+    .offset(offset);
 
-  const res = NextResponse.json(
+  const total = Number(countRow?.count ?? 0);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+  return noStoreJson(
     {
       notifications: rows,
-      pagination: { page: safePage, pageSize, total, totalPages },
+      pagination: { page, pageSize, total, totalPages },
     },
-    { status: 200 }
+    200
   );
-  res.headers.set("Cache-Control", "no-store");
-  return res;
 }

@@ -29,6 +29,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import Link from "next/link";
 
 function apiBase() {
   return process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "";
@@ -389,8 +390,8 @@ export default function TeamPage() {
                           {m.overdueCount > 0 ? "Needs attention" : "On track"}
                         </Badge>
 
-                        <Button variant="outline" className="rounded-xl w-full sm:w-auto" disabled>
-                          View (soon)
+                        <Button variant="outline" className="rounded-xl w-full sm:w-auto">
+                         <Link href={`/dashboard/team/${m.id}`}>View</Link>
                         </Button>
                       </div>
                     </div>

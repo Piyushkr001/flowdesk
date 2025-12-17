@@ -9,11 +9,22 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const session = await getSession();
-  if (!session) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
+function noStoreJson(data: any, status = 200) {
+  const res = NextResponse.json(data, { status });
+  res.headers.set("Cache-Control", "no-store");
+  return res;
+}
 
-  const { id } = await ctx.params;
+export async function GET(_req: Request, ctx: { params: { id: string } }) {
+  const session = await getSession();
+  if (!session) return noStoreJson({ message: "Unauthorized" }, 401);
+
+  const id = String(ctx.params?.id || "").trim();
+  if (!id) return noStoreJson({ message: "Missing user id." }, 400);
+
+  // ✅ Enum-safe "open" status check (works for enum/text and legacy 'done')
+  // Avoids: invalid input value for enum when comparing status <> 'done'
+  const isOpen = sql<boolean>`(t.status::text NOT IN ('done','completed'))`;
 
   const rows = await db
     .select({
@@ -22,23 +33,30 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       email: users.email,
       image: users.image,
 
+      // total assigned tasks
       assignedCount: sql<number>`(
-        select count(*) from ${tasks} t
+        select count(*)::int from ${tasks} t
         where t.assignee_id = ${users.id}
       )`,
+
+      // total created tasks
       createdCount: sql<number>`(
-        select count(*) from ${tasks} t
+        select count(*)::int from ${tasks} t
         where t.creator_id = ${users.id}
       )`,
+
+      // ✅ open tasks (recommended: assigned-to user & not completed/done)
       openCount: sql<number>`(
-        select count(*) from ${tasks} t
-        where (t.assignee_id = ${users.id} or t.creator_id = ${users.id})
-          and t.status <> 'done'
+        select count(*)::int from ${tasks} t
+        where t.assignee_id = ${users.id}
+          and ${isOpen}
       )`,
+
+      // ✅ overdue tasks (recommended: assigned-to user & open & due_at < now)
       overdueCount: sql<number>`(
-        select count(*) from ${tasks} t
-        where (t.assignee_id = ${users.id} or t.creator_id = ${users.id})
-          and t.status <> 'done'
+        select count(*)::int from ${tasks} t
+        where t.assignee_id = ${users.id}
+          and ${isOpen}
           and t.due_at is not null
           and t.due_at < now()
       )`,
@@ -48,8 +66,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     .limit(1);
 
   const member = rows[0] ?? null;
+  if (!member) return noStoreJson({ message: "User not found." }, 404);
 
-  const res = NextResponse.json({ member }, { status: member ? 200 : 404 });
-  res.headers.set("Cache-Control", "no-store");
-  return res;
+  return noStoreJson({ member }, 200);
 }

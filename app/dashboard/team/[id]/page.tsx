@@ -21,7 +21,13 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Input } from "@/components/ui/input";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -35,6 +41,10 @@ const api = axios.create({
   baseURL: apiBase(),
   withCredentials: true,
 });
+
+/** ✅ Match your API + tolerate legacy "done" */
+type TaskStatus = "todo" | "in_progress" | "review" | "completed" | "done";
+type TaskPriority = "low" | "medium" | "high" | "urgent";
 
 type TeamMember = {
   id: string;
@@ -50,8 +60,8 @@ type TeamMember = {
 type Task = {
   id: string;
   title: string;
-  status: "todo" | "in_progress" | "done";
-  priority: "low" | "medium" | "high";
+  status: TaskStatus;
+  priority: TaskPriority;
   dueAt: string | null;
   createdAt: string;
   creatorId: string | null;
@@ -69,53 +79,78 @@ function initials(name?: string) {
   return parts.map((p) => p[0]?.toUpperCase()).join("");
 }
 
-function fmtDate(iso: string) {
-  try {
-    return new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
-  } catch {
-    return iso;
-  }
+function useDebounced<T>(value: T, delay = 350) {
+  const [debounced, setDebounced] = React.useState(value);
+  React.useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(t);
+  }, [value, delay]);
+  return debounced;
 }
 
-function statusBadge(status: Task["status"]) {
-  if (status === "done") return <Badge className="rounded-full" variant="secondary">Done</Badge>;
-  if (status === "in_progress") return <Badge className="rounded-full bg-linear-to-r from-sky-500 to-indigo-600 text-white">In Progress</Badge>;
+function normalizeStatus(s: any): Exclude<TaskStatus, "done"> {
+  const v = typeof s === "string" ? s.trim().toLowerCase() : "todo";
+  if (v === "done") return "completed";
+  if (v === "todo" || v === "in_progress" || v === "review" || v === "completed") return v;
+  return "todo";
+}
+
+function normalizePriority(p: any): TaskPriority {
+  const v = typeof p === "string" ? p.trim().toLowerCase() : "medium";
+  if (v === "low" || v === "medium" || v === "high" || v === "urgent") return v;
+  return "medium";
+}
+
+function fmtDate(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+function StatusPill({ status }: { status: TaskStatus }) {
+  const s = normalizeStatus(status);
+  if (s === "completed") return <Badge className="rounded-full" variant="secondary">Completed</Badge>;
+  if (s === "review") return <Badge className="rounded-full" variant="secondary">Review</Badge>;
+  if (s === "in_progress") return (
+    <Badge className="rounded-full bg-linear-to-r from-sky-500 to-indigo-600 text-white">In progress</Badge>
+  );
   return <Badge className="rounded-full" variant="outline">To do</Badge>;
 }
 
-function priorityBadge(p: Task["priority"]) {
-  if (p === "high") return <Badge className="rounded-full bg-linear-to-r from-rose-500 to-red-600 text-white">High</Badge>;
-  if (p === "medium") return <Badge className="rounded-full bg-linear-to-r from-sky-500 to-indigo-600 text-white">Medium</Badge>;
+function PriorityPill({ priority }: { priority: TaskPriority }) {
+  const p = normalizePriority(priority);
+  if (p === "urgent") return (
+    <Badge className="rounded-full bg-linear-to-r from-fuchsia-500 to-purple-600 text-white">Urgent</Badge>
+  );
+  if (p === "high") return (
+    <Badge className="rounded-full bg-linear-to-r from-rose-500 to-red-600 text-white">High</Badge>
+  );
+  if (p === "medium") return (
+    <Badge className="rounded-full bg-linear-to-r from-sky-500 to-indigo-600 text-white">Medium</Badge>
+  );
   return <Badge className="rounded-full" variant="secondary">Low</Badge>;
 }
 
 export default function TeamMemberPage() {
   const router = useRouter();
-  const params = useParams<{ id: string }>();
-  const memberId = params?.id;
+  const params = useParams();
 
+  const memberId = typeof (params as any)?.id === "string" ? (params as any).id : "";
   const base = apiBase();
-
-  // realtime ping (optional — uses your existing SSE)
-  const [tick, setTick] = React.useState(0);
-  React.useEffect(() => {
-    const url = `${base}/api/v1/realtime/dashboard`;
-    const es = new EventSource(url, { withCredentials: true } as any);
-    es.onmessage = () => setTick((t) => t + 1);
-    es.onerror = () => {};
-    return () => es.close();
-  }, [base]);
 
   const [member, setMember] = React.useState<TeamMember | null>(null);
   const [loadingMember, setLoadingMember] = React.useState(true);
 
   const [view, setView] = React.useState<"assigned" | "created" | "all">("assigned");
   const [q, setQ] = React.useState("");
+  const qDebounced = useDebounced(q, 350);
+
   const [page, setPage] = React.useState(1);
   const [pageSize] = React.useState(10);
 
   const [tasks, setTasks] = React.useState<Task[]>([]);
   const [loadingTasks, setLoadingTasks] = React.useState(true);
+
   const [refreshing, setRefreshing] = React.useState(false);
   const [tasksPg, setTasksPg] = React.useState<TasksResponse["pagination"]>({
     page: 1,
@@ -124,45 +159,119 @@ export default function TeamMemberPage() {
     totalPages: 1,
   });
 
-  React.useEffect(() => setPage(1), [view, q]);
+  // reset page on filter/search changes (debounced)
+  React.useEffect(() => setPage(1), [view, qDebounced]);
 
-  const loadMember = React.useCallback(async () => {
-    setLoadingMember(true);
-    try {
-      const { data } = await api.get(`/api/v1/team/${memberId}`);
-      setMember(data?.member ?? null);
-    } catch {
-      setMember(null);
-    } finally {
-      setLoadingMember(false);
-    }
-  }, [memberId]);
+  const loadMember = React.useCallback(
+    async (opts?: { silent?: boolean }) => {
+      if (!memberId) return;
 
-  const loadTasks = React.useCallback(async () => {
-    setLoadingTasks(true);
-    try {
-      const { data } = await api.get<TasksResponse>(`/api/v1/team/${memberId}/tasks`, {
-        params: { view, q: q.trim() || undefined, page, pageSize },
-      });
-      setTasks(Array.isArray(data?.tasks) ? data.tasks : []);
-      setTasksPg(data?.pagination ?? { page, pageSize, total: 0, totalPages: 1 });
-    } catch {
-      setTasks([]);
-      setTasksPg({ page, pageSize, total: 0, totalPages: 1 });
-    } finally {
-      setLoadingTasks(false);
-    }
-  }, [memberId, view, q, page, pageSize]);
+      const silent = Boolean(opts?.silent);
+      if (!silent) setLoadingMember(true);
 
+      try {
+        const { data } = await api.get(`/api/v1/team/${memberId}`);
+        setMember(data?.member ?? null);
+      } catch {
+        setMember(null);
+      } finally {
+        if (!silent) setLoadingMember(false);
+      }
+    },
+    [memberId]
+  );
+
+  const loadTasks = React.useCallback(
+    async (opts?: { silent?: boolean }) => {
+      if (!memberId) return;
+
+      const silent = Boolean(opts?.silent);
+      if (!silent) setLoadingTasks(true);
+
+      try {
+        const { data } = await api.get<TasksResponse>(`/api/v1/team/${memberId}/tasks`, {
+          params: {
+            view,
+            q: qDebounced.trim() || undefined,
+            page,
+            pageSize,
+          },
+        });
+
+        const rows = Array.isArray(data?.tasks) ? data.tasks : [];
+        setTasks(
+          rows.map((t) => ({
+            ...t,
+            status: normalizeStatus(t.status) as any,
+            priority: normalizePriority(t.priority),
+          }))
+        );
+
+        setTasksPg(data?.pagination ?? { page, pageSize, total: 0, totalPages: 1 });
+      } catch {
+        setTasks([]);
+        setTasksPg({ page, pageSize, total: 0, totalPages: 1 });
+      } finally {
+        if (!silent) setLoadingTasks(false);
+      }
+    },
+    [memberId, view, qDebounced, page, pageSize]
+  );
+
+  // keep refs for SSE reconcile
+  const loadMemberRef = React.useRef(loadMember);
+  const loadTasksRef = React.useRef(loadTasks);
+  React.useEffect(() => {
+    loadMemberRef.current = loadMember;
+    loadTasksRef.current = loadTasks;
+  }, [loadMember, loadTasks]);
+
+  // initial load
   React.useEffect(() => {
     if (!memberId) return;
     loadMember();
     loadTasks();
-  }, [memberId, loadMember, loadTasks, tick]);
+  }, [memberId, loadMember, loadTasks]);
+
+  // ✅ SSE reconcile (throttled; avoids infinite re-render loops)
+  const lastAutoRefreshRef = React.useRef(0);
+  const autoRefreshInFlightRef = React.useRef(false);
+
+  React.useEffect(() => {
+    if (!memberId) return;
+
+    const url = `${base}/api/v1/realtime/dashboard`;
+    const es = new EventSource(url, { withCredentials: true } as any);
+
+    const maybeRefresh = () => {
+      const now = Date.now();
+      if (now - lastAutoRefreshRef.current < 10_000) return; // max once/10s
+      if (autoRefreshInFlightRef.current) return;
+
+      lastAutoRefreshRef.current = now;
+      autoRefreshInFlightRef.current = true;
+
+      Promise.all([
+        loadMemberRef.current({ silent: true }),
+        loadTasksRef.current({ silent: true }),
+      ]).finally(() => {
+        autoRefreshInFlightRef.current = false;
+      });
+    };
+
+    es.addEventListener("ping", maybeRefresh as any);
+    es.addEventListener("message", maybeRefresh as any);
+    es.onerror = () => {};
+
+    return () => es.close();
+  }, [base, memberId]);
 
   async function onRefresh() {
     setRefreshing(true);
-    await Promise.all([loadMember(), loadTasks()]);
+    await Promise.all([
+      loadMember({ silent: true }),
+      loadTasks({ silent: true }),
+    ]);
     setRefreshing(false);
   }
 
@@ -188,12 +297,20 @@ export default function TeamMemberPage() {
 
           <div className="flex items-center gap-2">
             <Button variant="outline" className="rounded-xl" onClick={onRefresh} disabled={refreshing}>
-              {refreshing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCcw className="mr-2 h-4 w-4" />}
+              {refreshing ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCcw className="mr-2 h-4 w-4" />
+              )}
               Refresh
             </Button>
-            <Button asChild className="rounded-xl bg-linear-to-r from-sky-500 to-indigo-600 text-white hover:opacity-95">
+
+            <Button
+              asChild
+              className="rounded-xl bg-linear-to-r from-sky-500 to-indigo-600 text-white hover:opacity-95"
+            >
               <Link href="/dashboard/team">
-                <UsersIcon />
+                <Users className="mr-2 h-4 w-4" />
                 Team List
               </Link>
             </Button>
@@ -211,9 +328,7 @@ export default function TeamMemberPage() {
             {loadingMember ? (
               <div className="text-sm text-muted-foreground">Loading member…</div>
             ) : !member ? (
-              <div className="text-sm text-muted-foreground">
-                Member not found or you don’t have access.
-              </div>
+              <div className="text-sm text-muted-foreground">Member not found or you don’t have access.</div>
             ) : (
               <div className="flex flex-col lg:flex-row gap-6 lg:items-center lg:justify-between">
                 <div className="flex items-center gap-4 min-w-0">
@@ -221,6 +336,7 @@ export default function TeamMemberPage() {
                     <AvatarImage src={member.image || undefined} alt={member.name} />
                     <AvatarFallback>{initials(member.name)}</AvatarFallback>
                   </Avatar>
+
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <div className="truncate text-lg font-semibold text-slate-900 dark:text-slate-50">
@@ -231,8 +347,9 @@ export default function TeamMemberPage() {
                         Active
                       </Badge>
                     </div>
-                    <div className="mt-1 flex items-center gap-2 text-sm text-muted-foreground truncate">
-                      <Mail className="h-4 w-4" />
+
+                    <div className="mt-1 flex items-center gap-2 text-sm text-muted-foreground min-w-0">
+                      <Mail className="h-4 w-4 shrink-0" />
                       <span className="truncate">{member.email}</span>
                     </div>
                   </div>
@@ -310,7 +427,7 @@ export default function TeamMemberPage() {
               <div className="rounded-2xl border border-black/5 dark:border-white/10 bg-white/60 dark:bg-slate-950/30 p-6">
                 <div className="text-sm font-semibold text-slate-900 dark:text-slate-50">No tasks found</div>
                 <div className="mt-1 text-sm text-muted-foreground">
-                  {q.trim() ? "Try a different search term." : "This member has no tasks for this filter."}
+                  {qDebounced.trim() ? "Try a different search term." : "This member has no tasks for this filter."}
                 </div>
               </div>
             ) : (
@@ -324,13 +441,16 @@ export default function TeamMemberPage() {
                       <div className="truncate font-semibold text-slate-900 dark:text-slate-50">
                         {t.title}
                       </div>
+
                       <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                        {statusBadge(t.status)}
-                        {priorityBadge(t.priority)}
+                        <StatusPill status={t.status} />
+                        <PriorityPill priority={t.priority} />
+
                         <span className="inline-flex items-center gap-1">
                           <Calendar className="h-3.5 w-3.5" />
                           {t.dueAt ? `Due ${fmtDate(t.dueAt)}` : "No due date"}
                         </span>
+
                         <span>•</span>
                         <span>Created {fmtDate(t.createdAt)}</span>
                       </div>
@@ -344,9 +464,9 @@ export default function TeamMemberPage() {
                         </>
                       ) : null}
 
-                      {/* Placeholder action (no task detail page yet) */}
-                      <Button variant="outline" className="rounded-xl" disabled>
-                        Open
+                      {/* ✅ Implemented: open task detail */}
+                      <Button asChild variant="outline" className="rounded-xl">
+                        <Link href={`/dashboard/tasks/${t.id}`}>Open</Link>
                       </Button>
                     </div>
                   </div>
@@ -378,15 +498,16 @@ function Stat({
         danger && "border-red-500/25"
       )}
     >
-      <div className={cn("flex items-center gap-2 text-xs", danger ? "text-red-600 dark:text-red-400" : "text-muted-foreground")}>
+      <div className={cn(
+        "flex items-center gap-2 text-xs",
+        danger ? "text-red-600 dark:text-red-400" : "text-muted-foreground"
+      )}>
         {icon}
         <span>{label}</span>
       </div>
-      <div className={cn("mt-1 text-lg font-bold", danger ? "text-red-600 dark:text-red-400" : "")}>{value}</div>
+      <div className={cn("mt-1 text-lg font-bold", danger ? "text-red-600 dark:text-red-400" : "")}>
+        {value}
+      </div>
     </div>
   );
-}
-
-function UsersIcon() {
-  return <span className="mr-2 inline-flex h-4 w-4" />;
 }

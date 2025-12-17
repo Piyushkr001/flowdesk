@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { and, or, eq, ilike, sql } from "drizzle-orm";
+import { and, or, eq, ilike, sql, desc } from "drizzle-orm";
 
 import { db } from "@/config/db";
 import { tasks } from "@/config/schema";
@@ -9,18 +9,40 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const session = await getSession();
-  if (!session) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
+function noStoreJson(data: any, status = 200) {
+  const res = NextResponse.json(data, { status });
+  res.headers.set("Cache-Control", "no-store");
+  return res;
+}
 
-  const { id } = await ctx.params;
+function parseIntSafe(v: string | null, fallback: number) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+type View = "assigned" | "created" | "all";
+
+function safeView(v: string | null): View {
+  const x = (v || "assigned").trim().toLowerCase();
+  if (x === "assigned" || x === "created" || x === "all") return x;
+  return "assigned";
+}
+
+export async function GET(req: Request, ctx: { params: { id: string } }) {
+  const session = await getSession();
+  if (!session) return noStoreJson({ message: "Unauthorized" }, 401);
+
+  const id = String(ctx.params?.id || "").trim();
+  if (!id) return noStoreJson({ message: "Missing user id." }, 400);
 
   const url = new URL(req.url);
-  const view = (url.searchParams.get("view") || "assigned") as "assigned" | "created" | "all";
+
+  const view = safeView(url.searchParams.get("view"));
   const q = url.searchParams.get("q")?.trim() || "";
 
-  const page = Math.max(1, Number(url.searchParams.get("page") || 1));
-  const pageSize = Math.min(20, Math.max(5, Number(url.searchParams.get("pageSize") || 10)));
+  const page = parseIntSafe(url.searchParams.get("page"), 1);
+  const pageSizeRaw = parseIntSafe(url.searchParams.get("pageSize"), 10);
+  const pageSize = Math.min(20, Math.max(5, pageSizeRaw));
 
   const who =
     view === "created"
@@ -29,18 +51,28 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
       ? or(eq(tasks.creatorId, id), eq(tasks.assigneeId, id))
       : eq(tasks.assigneeId, id); // assigned
 
-  const where = and(
-    who,
-    q ? ilike(tasks.title, `%${q}%`) : sql`true`
-  );
+  const whereParts: any[] = [who];
+
+  // ✅ Search (title + description if present)
+  if (q) {
+    whereParts.push(
+      or(
+        ilike(tasks.title, `%${q}%`),
+        // If you don't have tasks.description in schema, remove the next line:
+        ilike((tasks as any).description, `%${q}%`)
+      )
+    );
+  }
+
+  const whereClause = and(...whereParts);
 
   // count
-  const countRows = await db
-    .select({ count: sql<number>`count(*)` })
+  const [countRow] = await db
+    .select({ count: sql<number>`count(*)::int` })
     .from(tasks)
-    .where(where);
+    .where(whereClause);
 
-  const total = Number(countRows?.[0]?.count || 0);
+  const total = Number(countRow?.count ?? 0);
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const safePage = Math.min(page, totalPages);
 
@@ -56,18 +88,13 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
       assigneeId: tasks.assigneeId,
     })
     .from(tasks)
-    .where(where)
-    .orderBy(sql`${tasks.createdAt} desc`)
+    .where(whereClause)
+    .orderBy(desc(tasks.createdAt))
     .limit(pageSize)
     .offset((safePage - 1) * pageSize);
 
-  const res = NextResponse.json(
-    {
-      tasks: rows,
-      pagination: { page: safePage, pageSize, total, totalPages },
-    },
-    { status: 200 }
-  );
-  res.headers.set("Cache-Control", "no-store");
-  return res;
+  return noStoreJson({
+    tasks: rows,
+    pagination: { page: safePage, pageSize, total, totalPages },
+  });
 }

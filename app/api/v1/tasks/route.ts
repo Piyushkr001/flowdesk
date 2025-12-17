@@ -1,9 +1,11 @@
+// app/api/v1/tasks/route.ts
 import { NextResponse } from "next/server";
-import { and, asc, desc, eq, ilike, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, lt, or, sql } from "drizzle-orm";
 
 import { db } from "@/config/db";
-import { tasks, users } from "@/config/schema";
+import { tasks, users, notifications, notificationPrefs } from "@/config/schema";
 import { getSession } from "@/lib/auth";
+import { emitUser, emitUsers, emitWorkspace } from "@/lib/realtime-emit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,6 +16,7 @@ const PRIORITY_VALUES = ["low", "medium", "high", "urgent"] as const;
 
 type TaskStatus = (typeof STATUS_VALUES)[number];
 type TaskPriority = (typeof PRIORITY_VALUES)[number];
+type TaskView = "all" | "assigned" | "created" | "overdue";
 
 function isTaskStatus(v: unknown): v is TaskStatus {
   return typeof v === "string" && (STATUS_VALUES as readonly string[]).includes(v);
@@ -21,6 +24,10 @@ function isTaskStatus(v: unknown): v is TaskStatus {
 
 function isTaskPriority(v: unknown): v is TaskPriority {
   return typeof v === "string" && (PRIORITY_VALUES as readonly string[]).includes(v);
+}
+
+function isTaskView(v: unknown): v is TaskView {
+  return v === "all" || v === "assigned" || v === "created" || v === "overdue";
 }
 
 function parseIntSafe(v: string | null, fallback: number) {
@@ -44,6 +51,16 @@ function normEnum(v: unknown) {
   return typeof v === "string" ? v.trim().toLowerCase() : "";
 }
 
+async function getTaskAssignedPref(userId: string) {
+  const [row] = await db
+    .select({ taskAssigned: notificationPrefs.taskAssigned })
+    .from(notificationPrefs)
+    .where(eq(notificationPrefs.userId, userId))
+    .limit(1);
+
+  return row?.taskAssigned ?? true;
+}
+
 export async function GET(req: Request) {
   const session = await getSession();
   if (!session) return noStoreJson({ message: "Unauthorized" }, 401);
@@ -54,6 +71,12 @@ export async function GET(req: Request) {
   const statusParam = url.searchParams.get("status")?.trim() || "";
   const priorityParam = url.searchParams.get("priority")?.trim() || "";
   const sort = url.searchParams.get("sort")?.trim() || "updated"; // updated | due | created
+  const viewRaw = url.searchParams.get("view")?.trim() || "all";
+
+  const view = normEnum(viewRaw) as TaskView;
+  if (!isTaskView(view)) {
+    return noStoreJson({ message: "Invalid view. Allowed: all, assigned, created, overdue" }, 400);
+  }
 
   const page = parseIntSafe(url.searchParams.get("page"), 1);
   const pageSizeRaw = parseIntSafe(url.searchParams.get("pageSize"), 20);
@@ -64,29 +87,35 @@ export async function GET(req: Request) {
   const priorityFilter = priorityParam ? normEnum(priorityParam) : "";
 
   if (statusFilter && !isTaskStatus(statusFilter)) {
-    return noStoreJson(
-      { message: `Invalid status. Allowed: ${STATUS_VALUES.join(", ")}` },
-      400
-    );
+    return noStoreJson({ message: `Invalid status. Allowed: ${STATUS_VALUES.join(", ")}` }, 400);
   }
   if (priorityFilter && !isTaskPriority(priorityFilter)) {
-    return noStoreJson(
-      { message: `Invalid priority. Allowed: ${PRIORITY_VALUES.join(", ")}` },
-      400
-    );
+    return noStoreJson({ message: `Invalid priority. Allowed: ${PRIORITY_VALUES.join(", ")}` }, 400);
   }
 
   const whereParts: any[] = [];
 
-  // ✅ Security: only tasks you created or are assigned to
-  whereParts.push(or(eq(tasks.creatorId, session.id), eq(tasks.assigneeId, session.id)));
+  // --- Personal Views (Requirement 4) ---
+  if (view === "all") {
+    // current behavior: tasks you created OR are assigned to
+    whereParts.push(or(eq(tasks.creatorId, session.id), eq(tasks.assigneeId, session.id)));
+  } else if (view === "assigned") {
+    whereParts.push(eq(tasks.assigneeId, session.id));
+  } else if (view === "created") {
+    whereParts.push(eq(tasks.creatorId, session.id));
+  } else if (view === "overdue") {
+    const now = new Date();
+    // legacy-safe open status check: avoid treating completed/done as overdue
+    const statusText = sql<string>`${tasks.status}::text`;
+    const isOpen = sql<boolean>`(${statusText} NOT IN ('done', 'completed'))`;
 
-  // ✅ Search (title + description)
-  if (q) {
-    whereParts.push(or(ilike(tasks.title, `%${q}%`), ilike(tasks.description, `%${q}%`)));
+    whereParts.push(and(eq(tasks.assigneeId, session.id), isOpen, lt(tasks.dueAt, now)));
   }
 
-  // ✅ Filters
+  // --- Search ---
+  if (q) whereParts.push(or(ilike(tasks.title, `%${q}%`), ilike(tasks.description, `%${q}%`)));
+
+  // --- Filters ---
   if (statusFilter) whereParts.push(eq(tasks.status, statusFilter as any));
   if (priorityFilter) whereParts.push(eq(tasks.priority, priorityFilter as any));
 
@@ -115,15 +144,10 @@ export async function GET(req: Request) {
   const total = Number(countRow?.count ?? 0);
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
-  return noStoreJson(
-    {
-      tasks: rows,
-      pagination: { page, pageSize, total, totalPages },
-    },
-    200
-  );
+  return noStoreJson({ tasks: rows, pagination: { page, pageSize, total, totalPages } }, 200);
 }
 
+// POST unchanged (keep your current POST here)
 export async function POST(req: Request) {
   const session = await getSession();
   if (!session) return noStoreJson({ message: "Unauthorized" }, 401);
@@ -136,7 +160,6 @@ export async function POST(req: Request) {
   const statusRaw = normEnum(body?.status || "todo");
   const priorityRaw = normEnum(body?.priority || "medium");
 
-  // ✅ Accept both spec name and your internal name
   const requestedAssignee =
     typeof body?.assignedToId === "string"
       ? body.assignedToId.trim()
@@ -145,54 +168,72 @@ export async function POST(req: Request) {
       : "";
 
   const assigneeId = requestedAssignee || session.id;
-
-  // Spec: dueDate required
   const dueAt = parseDateSafe(body?.dueAt ?? body?.dueDate);
 
   if (!title) return noStoreJson({ message: "Title is required." }, 400);
   if (title.length > 100) return noStoreJson({ message: "Title must be at most 100 characters." }, 400);
-
-  if (!dueAt) {
-    return noStoreJson({ message: "dueAt (dueDate) is required and must be a valid date." }, 400);
-  }
+  if (!dueAt) return noStoreJson({ message: "dueAt (dueDate) is required and must be a valid date." }, 400);
 
   if (!isTaskStatus(statusRaw)) {
-    return noStoreJson(
-      { message: `Invalid status. Allowed: ${STATUS_VALUES.join(", ")}` },
-      400
-    );
+    return noStoreJson({ message: `Invalid status. Allowed: ${STATUS_VALUES.join(", ")}` }, 400);
   }
-
   if (!isTaskPriority(priorityRaw)) {
-    return noStoreJson(
-      { message: `Invalid priority. Allowed: ${PRIORITY_VALUES.join(", ")}` },
-      400
-    );
+    return noStoreJson({ message: `Invalid priority. Allowed: ${PRIORITY_VALUES.join(", ")}` }, 400);
   }
 
-  // Ensure assignee exists (friendlier than FK error)
-  const [assignee] = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(eq(users.id, assigneeId))
-    .limit(1);
+  const [assignee] = await db.select({ id: users.id }).from(users).where(eq(users.id, assigneeId)).limit(1);
+  if (!assignee) return noStoreJson({ message: "Invalid assignedToId/assigneeId (user not found)." }, 400);
 
-  if (!assignee) {
-    return noStoreJson({ message: "Invalid assignedToId/assigneeId (user not found)." }, 400);
+  const { task, notif } = await db.transaction(async (tx) => {
+    const created = await tx
+      .insert(tasks)
+      .values({
+        title,
+        description,
+        status: statusRaw,
+        priority: priorityRaw,
+        dueAt,
+        creatorId: session.id,
+        assigneeId,
+      })
+      .returning();
+
+    const task = created[0];
+
+    let notif: any = null;
+    if (assigneeId !== session.id) {
+      const allow = await getTaskAssignedPref(assigneeId);
+      if (allow) {
+        const inserted = await tx
+          .insert(notifications)
+          .values({
+            userId: assigneeId,
+            title: "Task assigned to you",
+            body: `“${task.title}” was assigned to you.`,
+            read: false,
+          })
+          .returning();
+
+        notif = inserted[0] ?? null;
+      }
+    }
+
+    return { task, notif };
+  });
+
+  try {
+    await emitWorkspace("task:created", { task });
+  } catch {}
+
+  try {
+    await emitUsers([session.id, assigneeId], "task:created", { task });
+  } catch {}
+
+  if (notif) {
+    try {
+      await emitUser(assigneeId, "notification:new", { notification: notif });
+    } catch {}
   }
 
-  const created = await db
-    .insert(tasks)
-    .values({
-      title,
-      description,
-      status: statusRaw,
-      priority: priorityRaw,
-      dueAt,
-      creatorId: session.id,
-      assigneeId,
-    })
-    .returning();
-
-  return noStoreJson({ ok: true, task: created[0] }, 201);
+  return noStoreJson({ ok: true, task }, 201);
 }

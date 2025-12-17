@@ -16,24 +16,31 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { getSocket } from "@/lib/socket-client";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 
 function apiBase() {
-  // If you keep Next.js API in the same app, leave NEXT_PUBLIC_API_URL empty.
   return process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "";
 }
 
 const api = axios.create({
-  baseURL: apiBase(), // "" => same-origin
+  baseURL: apiBase(),
   withCredentials: true,
 });
 
-type TaskStatus = "todo" | "in_progress" | "done";
-type TaskPriority = "low" | "medium" | "high";
+/** ✅ New enums + tolerate legacy "done" */
+type TaskStatus = "todo" | "in_progress" | "review" | "completed" | "done";
+type TaskPriority = "low" | "medium" | "high" | "urgent";
 
 type DashboardTask = {
   id: string;
@@ -64,6 +71,69 @@ type DashboardOverview = {
   recentNotifications: DashboardNotif[];
 };
 
+const RECENT_TASKS_LIMIT = 6;
+const RECENT_NOTIFS_LIMIT = 6;
+
+function normalizeStatus(s: any): Exclude<TaskStatus, "done"> {
+  const v = typeof s === "string" ? s.trim().toLowerCase() : "todo";
+  if (v === "done") return "completed";
+  if (v === "todo" || v === "in_progress" || v === "review" || v === "completed") return v;
+  return "todo";
+}
+
+function normalizePriority(p: any): TaskPriority {
+  const v = typeof p === "string" ? p.trim().toLowerCase() : "medium";
+  if (v === "low" || v === "medium" || v === "high" || v === "urgent") return v;
+  return "medium";
+}
+
+function normalizeTask(raw: any): DashboardTask | null {
+  if (!raw || typeof raw !== "object" || !raw.id) return null;
+  return {
+    id: String(raw.id),
+    title: String(raw.title ?? ""),
+    status: normalizeStatus(raw.status),
+    priority: normalizePriority(raw.priority),
+    dueAt: raw.dueAt ? String(raw.dueAt) : null,
+    updatedAt: String(raw.updatedAt ?? new Date().toISOString()),
+  };
+}
+
+function normalizeNotif(raw: any): DashboardNotif | null {
+  if (!raw || typeof raw !== "object" || !raw.id) return null;
+  return {
+    id: String(raw.id),
+    title: String(raw.title ?? ""),
+    body: raw.body ?? null,
+    createdAt: String(raw.createdAt ?? new Date().toISOString()),
+    read: Boolean(raw.read),
+  };
+}
+
+function sortByUpdatedDesc(list: DashboardTask[]) {
+  return list
+    .slice()
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+}
+
+function sortByCreatedDesc(list: DashboardNotif[]) {
+  return list
+    .slice()
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
+function upsertRecentTask(prev: DashboardTask[], t: DashboardTask) {
+  const i = prev.findIndex((x) => x.id === t.id);
+  const next = i === -1 ? [t, ...prev] : prev.map((x) => (x.id === t.id ? { ...x, ...t } : x));
+  return sortByUpdatedDesc(next).slice(0, RECENT_TASKS_LIMIT);
+}
+
+function upsertRecentNotif(prev: DashboardNotif[], n: DashboardNotif) {
+  const i = prev.findIndex((x) => x.id === n.id);
+  const next = i === -1 ? [n, ...prev] : prev.map((x) => (x.id === n.id ? { ...x, ...n } : x));
+  return sortByCreatedDesc(next).slice(0, RECENT_NOTIFS_LIMIT);
+}
+
 function formatDue(dueAt: string | null) {
   if (!dueAt) return "No due date";
   const d = new Date(dueAt);
@@ -71,14 +141,18 @@ function formatDue(dueAt: string | null) {
 }
 
 function statusBadge(status: TaskStatus) {
-  if (status === "done") return <Badge className="rounded-full">Done</Badge>;
-  if (status === "in_progress") return <Badge variant="secondary" className="rounded-full">In progress</Badge>;
+  const s = normalizeStatus(status);
+  if (s === "completed") return <Badge className="rounded-full">Completed</Badge>;
+  if (s === "review") return <Badge variant="secondary" className="rounded-full">Review</Badge>;
+  if (s === "in_progress") return <Badge variant="secondary" className="rounded-full">In progress</Badge>;
   return <Badge variant="outline" className="rounded-full">To do</Badge>;
 }
 
 function priorityBadge(p: TaskPriority) {
-  if (p === "high") return <Badge className="rounded-full bg-red-600 text-white">High</Badge>;
-  if (p === "medium") return <Badge className="rounded-full bg-amber-500 text-white">Medium</Badge>;
+  const v = normalizePriority(p);
+  if (v === "urgent") return <Badge className="rounded-full bg-fuchsia-600 text-white">Urgent</Badge>;
+  if (v === "high") return <Badge className="rounded-full bg-red-600 text-white">High</Badge>;
+  if (v === "medium") return <Badge className="rounded-full bg-amber-500 text-white">Medium</Badge>;
   return <Badge className="rounded-full bg-emerald-600 text-white">Low</Badge>;
 }
 
@@ -97,7 +171,6 @@ export default function DashboardPage() {
       const res = await api.get<DashboardOverview>("/api/v1/dashboard/overview");
       setData(res.data);
     } catch (err: any) {
-      // If user isn’t logged in, you may want to redirect, but keeping it UI-friendly:
       const msg = err?.response?.data?.message || "Failed to load dashboard.";
       toast.error(msg);
       setData(null);
@@ -112,44 +185,188 @@ export default function DashboardPage() {
     fetchOverview();
   }, [fetchOverview]);
 
-  // “Realtime”: SSE pings => refetch (throttled)
+  // Keep latest ref for realtime handlers
+  const fetchRef = React.useRef(fetchOverview);
   React.useEffect(() => {
-    let es: EventSource | null = null;
-    let retryTimer: any = null;
+    fetchRef.current = fetchOverview;
+  }, [fetchOverview]);
 
-    const throttleRef = { last: 0 };
-    const THROTTLE_MS = 2500;
+  // ✅ Socket.io realtime: instant UI update + debounced reconcile refetch
+  const reconcileTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    const connect = () => {
-      // Same-origin SSE (cookies included automatically)
-      es = new EventSource("/api/v1/realtime/dashboard");
+  const scheduleReconcile = React.useCallback(() => {
+    if (reconcileTimerRef.current) clearTimeout(reconcileTimerRef.current);
+    reconcileTimerRef.current = setTimeout(() => {
+      fetchRef.current({ silent: true });
+    }, 400);
+  }, []);
 
-      const onPulse = () => {
-        const now = Date.now();
-        if (now - throttleRef.last < THROTTLE_MS) return;
-        throttleRef.last = now;
-        fetchOverview({ silent: true });
-      };
+  React.useEffect(() => {
+    let mounted = true;
+    let cleanup: (() => void) | null = null;
 
-      es.addEventListener("ready", onPulse);
-      es.addEventListener("ping", onPulse);
-      es.addEventListener("invalidate", onPulse);
+    (async () => {
+      try {
+        const s = await getSocket();
+        if (!mounted) return;
 
-      es.onerror = () => {
-        es?.close();
-        es = null;
-        // simple backoff retry
-        retryTimer = setTimeout(connect, 2000);
-      };
-    };
+        const onReady = () => {
+          // sync after connect/reconnect
+          scheduleReconcile();
+        };
 
-    connect();
+        // Handles BOTH created + updated
+        const onTaskUpsert = (payload: any) => {
+          const t = normalizeTask(payload?.task ?? payload);
+          if (!t) return;
+
+          setData((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              recentTasks: upsertRecentTask(prev.recentTasks ?? [], t),
+            };
+          });
+
+          scheduleReconcile();
+        };
+
+        const onTaskDeleted = (payload: any) => {
+          const id = String(payload?.id ?? payload ?? "");
+          if (!id) return;
+
+          setData((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              recentTasks: (prev.recentTasks ?? []).filter((x) => x.id !== id),
+            };
+          });
+
+          scheduleReconcile();
+        };
+
+        // ✅ Correct unread count deltas (prevents drift/double increments)
+        const onNotificationUpsert = (payload: any) => {
+          const n = normalizeNotif(payload?.notification ?? payload);
+          if (!n) return;
+
+          setData((prev) => {
+            if (!prev) return prev;
+
+            const prevList = prev.recentNotifications ?? [];
+            const existing = prevList.find((x) => x.id === n.id);
+
+            const prevUnread = existing ? !existing.read : false;
+            const nextUnread = !n.read;
+
+            const delta =
+              existing == null
+                ? nextUnread
+                  ? 1
+                  : 0
+                : prevUnread === nextUnread
+                ? 0
+                : nextUnread
+                ? 1
+                : -1;
+
+            return {
+              ...prev,
+              stats: {
+                ...prev.stats,
+                unreadNotifications: Math.max(0, (prev.stats?.unreadNotifications ?? 0) + delta),
+              },
+              recentNotifications: upsertRecentNotif(prevList, n),
+            };
+          });
+
+          scheduleReconcile();
+        };
+
+        const onNotificationDeleted = (payload: any) => {
+          const id = String(payload?.id ?? payload ?? "");
+          if (!id) return;
+
+          setData((prev) => {
+            if (!prev) return prev;
+
+            const prevList = prev.recentNotifications ?? [];
+            const existing = prevList.find((x) => x.id === id);
+            const delta = existing && !existing.read ? -1 : 0;
+
+            return {
+              ...prev,
+              stats: {
+                ...prev.stats,
+                unreadNotifications: Math.max(0, (prev.stats?.unreadNotifications ?? 0) + delta),
+              },
+              recentNotifications: prevList.filter((x) => x.id !== id),
+            };
+          });
+
+          scheduleReconcile();
+        };
+
+        const onNotificationCleared = () => {
+          setData((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              stats: { ...prev.stats, unreadNotifications: 0 },
+              recentNotifications: [],
+            };
+          });
+
+          scheduleReconcile();
+        };
+
+        const onNotificationBulkUpdated = () => {
+          // Bulk operations: best to reconcile from server truth
+          scheduleReconcile();
+        };
+
+        // Safer: handle both your custom event and socket.io built-in connect
+        s.on("ready", onReady);
+        s.on("connect", onReady);
+
+        // Tasks
+        s.on("task:updated", onTaskUpsert);
+        s.on("task:created", onTaskUpsert); // ✅ support create
+        s.on("task:deleted", onTaskDeleted);
+
+        // Notifications
+        s.on("notification:new", onNotificationUpsert);
+        s.on("notification:updated", onNotificationUpsert);
+        s.on("notification:deleted", onNotificationDeleted);
+        s.on("notification:cleared", onNotificationCleared);
+        s.on("notification:bulkUpdated", onNotificationBulkUpdated);
+
+        cleanup = () => {
+          s.off("ready", onReady);
+          s.off("connect", onReady);
+
+          s.off("task:updated", onTaskUpsert);
+          s.off("task:created", onTaskUpsert);
+          s.off("task:deleted", onTaskDeleted);
+
+          s.off("notification:new", onNotificationUpsert);
+          s.off("notification:updated", onNotificationUpsert);
+          s.off("notification:deleted", onNotificationDeleted);
+          s.off("notification:cleared", onNotificationCleared);
+          s.off("notification:bulkUpdated", onNotificationBulkUpdated);
+        };
+      } catch {
+        // If realtime is unavailable, dashboard still works via manual refresh
+      }
+    })();
 
     return () => {
-      if (retryTimer) clearTimeout(retryTimer);
-      es?.close();
+      mounted = false;
+      if (reconcileTimerRef.current) clearTimeout(reconcileTimerRef.current);
+      if (cleanup) cleanup();
     };
-  }, [fetchOverview]);
+  }, [scheduleReconcile]);
 
   const empty =
     !loading &&
@@ -173,7 +390,7 @@ export default function DashboardPage() {
             Overview
           </h1>
           <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-            Track tasks, deadlines, and notifications in real time.
+            Track tasks, deadlines, and notifications in real time (Socket.io).
           </p>
         </div>
 
@@ -209,11 +426,32 @@ export default function DashboardPage() {
         <>
           {/* Stats */}
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
-            <StatCard title="Assigned to me" value={data?.stats.assignedToMe ?? 0} icon={<ListChecks className="h-5 w-5" />} />
-            <StatCard title="Created by me" value={data?.stats.createdByMe ?? 0} icon={<ArrowRight className="h-5 w-5" />} />
-            <StatCard title="Overdue" value={data?.stats.overdue ?? 0} icon={<CalendarClock className="h-5 w-5" />} danger />
-            <StatCard title="Completed" value={data?.stats.completed ?? 0} icon={<CheckCircle2 className="h-5 w-5" />} />
-            <StatCard title="Unread alerts" value={data?.stats.unreadNotifications ?? 0} icon={<Bell className="h-5 w-5" />} />
+            <StatCard
+              title="Assigned to me"
+              value={data?.stats.assignedToMe ?? 0}
+              icon={<ListChecks className="h-5 w-5" />}
+            />
+            <StatCard
+              title="Created by me"
+              value={data?.stats.createdByMe ?? 0}
+              icon={<ArrowRight className="h-5 w-5" />}
+            />
+            <StatCard
+              title="Overdue"
+              value={data?.stats.overdue ?? 0}
+              icon={<CalendarClock className="h-5 w-5" />}
+              danger
+            />
+            <StatCard
+              title="Completed"
+              value={data?.stats.completed ?? 0}
+              icon={<CheckCircle2 className="h-5 w-5" />}
+            />
+            <StatCard
+              title="Unread alerts"
+              value={data?.stats.unreadNotifications ?? 0}
+              icon={<Bell className="h-5 w-5" />}
+            />
           </div>
 
           {/* Two-column section */}
@@ -222,7 +460,7 @@ export default function DashboardPage() {
             <Card className="flex-1 rounded-2xl border-black/5 bg-white/70 backdrop-blur dark:border-white/10 dark:bg-slate-950/40">
               <CardHeader className="pb-2">
                 <CardTitle className="text-base sm:text-lg">Recent tasks</CardTitle>
-                <CardDescription>Your latest updates (auto-refreshing).</CardDescription>
+                <CardDescription>Live updates via Socket.io.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
                 {(data?.recentTasks ?? []).length === 0 ? (
@@ -236,11 +474,7 @@ export default function DashboardPage() {
                 ) : (
                   <div className="grid gap-3">
                     {(data?.recentTasks ?? []).map((t) => (
-                      <Link
-                        key={t.id}
-                        href={`/dashboard/tasks/${t.id}`}
-                        className="block"
-                      >
+                      <Link key={t.id} href={`/dashboard/tasks/${t.id}`} className="block">
                         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl border border-black/5 bg-white dark:bg-slate-950 p-4 hover:bg-black/5 dark:hover:bg-white/5 transition">
                           <div className="min-w-0">
                             <div className="truncate font-semibold text-slate-900 dark:text-slate-50">
@@ -280,7 +514,7 @@ export default function DashboardPage() {
             <Card className="w-full xl:w-105 rounded-2xl border-black/5 bg-white/70 backdrop-blur dark:border-white/10 dark:bg-slate-950/40">
               <CardHeader className="pb-2">
                 <CardTitle className="text-base sm:text-lg">Notifications</CardTitle>
-                <CardDescription>Latest alerts for your workspace.</CardDescription>
+                <CardDescription>New assignments appear instantly.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
                 {(data?.recentNotifications ?? []).length === 0 ? (
@@ -298,7 +532,8 @@ export default function DashboardPage() {
                         key={n.id}
                         className={cn(
                           "rounded-xl border border-black/5 dark:border-white/10 bg-white dark:bg-slate-950 p-4",
-                          !n.read && "ring-1 ring-sky-500/25 bg-linear-to-r from-sky-500/5 to-indigo-500/5"
+                          !n.read &&
+                            "ring-1 ring-sky-500/25 bg-linear-to-r from-sky-500/5 to-indigo-500/5"
                         )}
                       >
                         <div className="flex items-start justify-between gap-3">
@@ -315,7 +550,13 @@ export default function DashboardPage() {
                               {new Date(n.createdAt).toLocaleString()}
                             </div>
                           </div>
-                          {!n.read ? <Badge className="rounded-full">New</Badge> : <Badge variant="outline" className="rounded-full">Read</Badge>}
+                          {!n.read ? (
+                            <Badge className="rounded-full">New</Badge>
+                          ) : (
+                            <Badge variant="outline" className="rounded-full">
+                              Read
+                            </Badge>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -355,7 +596,12 @@ function StatCard({
         <div className="flex items-center justify-between gap-3">
           <div>
             <div className="text-xs text-muted-foreground">{title}</div>
-            <div className={cn("mt-2 text-3xl font-extrabold", danger ? "text-red-600 dark:text-red-400" : "text-slate-900 dark:text-slate-50")}>
+            <div
+              className={cn(
+                "mt-2 text-3xl font-extrabold",
+                danger ? "text-red-600 dark:text-red-400" : "text-slate-900 dark:text-slate-50"
+              )}
+            >
               {value}
             </div>
           </div>
@@ -415,11 +661,14 @@ function EmptyState() {
               No tasks yet. Let’s create your first workflow.
             </h2>
             <p className="mt-3 text-slate-600 dark:text-slate-300">
-              Start by creating a task, assigning an owner, and setting a due date. This dashboard will update automatically as work progresses.
+              Start by creating a task, assigning an owner, and setting a due date. This dashboard updates live.
             </p>
 
             <div className="mt-6 flex flex-col sm:flex-row gap-3">
-              <Button asChild className="rounded-xl bg-linear-to-r from-sky-500 to-indigo-600 text-white hover:opacity-95">
+              <Button
+                asChild
+                className="rounded-xl bg-linear-to-r from-sky-500 to-indigo-600 text-white hover:opacity-95"
+              >
                 <Link href="/dashboard/tasks/new">
                   <Plus className="mr-2 h-4 w-4" />
                   Create your first task
@@ -439,9 +688,7 @@ function EmptyState() {
                   Tip: create tasks with <span className="font-semibold">priority + due date</span> for clean reporting.
                 </div>
               </div>
-              <div className="mt-4 text-xs text-muted-foreground">
-                This dashboard will auto-refresh via real-time updates.
-              </div>
+              <div className="mt-4 text-xs text-muted-foreground">Live updates are powered by Socket.io.</div>
             </div>
           </div>
         </div>
@@ -455,7 +702,10 @@ function DashboardSkeleton() {
     <div className="flex flex-col gap-4">
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
         {Array.from({ length: 5 }).map((_, i) => (
-          <Card key={i} className="rounded-2xl border-black/5 bg-white/70 backdrop-blur dark:border-white/10 dark:bg-slate-950/40">
+          <Card
+            key={i}
+            className="rounded-2xl border-black/5 bg-white/70 backdrop-blur dark:border-white/10 dark:bg-slate-950/40"
+          >
             <CardContent className="p-5">
               <Skeleton className="h-3 w-24" />
               <Skeleton className="mt-3 h-8 w-16" />
@@ -473,7 +723,10 @@ function DashboardSkeleton() {
           </CardHeader>
           <CardContent className="space-y-3">
             {Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="rounded-xl border border-black/5 dark:border-white/10 bg-white dark:bg-slate-950 p-4">
+              <div
+                key={i}
+                className="rounded-xl border border-black/5 dark:border-white/10 bg-white dark:bg-slate-950 p-4"
+              >
                 <Skeleton className="h-4 w-2/3" />
                 <Skeleton className="mt-2 h-3 w-1/2" />
               </div>
@@ -488,7 +741,10 @@ function DashboardSkeleton() {
           </CardHeader>
           <CardContent className="space-y-3">
             {Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="rounded-xl border border-black/5 dark:border-white/10 bg-white dark:bg-slate-950 p-4">
+              <div
+                key={i}
+                className="rounded-xl border border-black/5 dark:border-white/10 bg-white dark:bg-slate-950 p-4"
+              >
                 <Skeleton className="h-4 w-2/3" />
                 <Skeleton className="mt-2 h-3 w-1/2" />
               </div>

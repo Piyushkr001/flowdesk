@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 
 import { db } from "@/config/db";
 import { notifications } from "@/config/schema";
@@ -16,13 +16,16 @@ function noStoreJson(data: any, status = 200) {
   return res;
 }
 
-export async function DELETE() {
+export async function POST() {
   const session = await getSession();
   if (!session) return noStoreJson({ message: "Unauthorized" }, 401);
 
-  await db.delete(notifications).where(eq(notifications.userId, session.id));
+  await db
+    .update(notifications)
+    .set({ read: true })
+    .where(eq(notifications.userId, session.id));
 
-  await emitUser(session.id, "notification:cleared", {});
+  await emitUser(session.id, "notification:bulkUpdated", { read: true });
 
   return noStoreJson({ ok: true }, 200);
 }

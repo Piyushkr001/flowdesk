@@ -1,9 +1,11 @@
+// app/api/v1/tasks/[id]/route.ts
 import { NextResponse } from "next/server";
-import { and, eq, or, sql } from "drizzle-orm";
+import { and, eq, or, sql, inArray } from "drizzle-orm";
 
 import { db } from "@/config/db";
-import { tasks, users } from "@/config/schema";
+import { notifications, tasks, users, notificationPrefs } from "@/config/schema";
 import { getSession } from "@/lib/auth";
+import { emitUser, emitUsers } from "@/lib/realtime-emit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,12 +17,41 @@ const PRIORITY_VALUES = ["low", "medium", "high", "urgent"] as const;
 type TaskStatus = (typeof STATUS_VALUES)[number];
 type TaskPriority = (typeof PRIORITY_VALUES)[number];
 
-function isTaskStatus(v: unknown): v is TaskStatus {
-  return typeof v === "string" && (STATUS_VALUES as readonly string[]).includes(v);
+function noStoreJson(data: any, status = 200) {
+  const res = NextResponse.json(data, { status });
+  res.headers.set("Cache-Control", "no-store");
+  return res;
 }
-function isTaskPriority(v: unknown): v is TaskPriority {
-  return typeof v === "string" && (PRIORITY_VALUES as readonly string[]).includes(v);
+
+function uniq(ids: Array<string | null | undefined>) {
+  return Array.from(new Set(ids.filter(Boolean))) as string[];
 }
+
+function norm(v: unknown) {
+  return typeof v === "string" ? v.trim().toLowerCase() : "";
+}
+
+/** legacy: done -> completed */
+function normalizeStatus(v: unknown): TaskStatus | "" {
+  const s = norm(v).replace(/-/g, "_").replace(/\s+/g, "_");
+  if (!s) return "";
+  if (s === "done" || s === "complete" || s === "completed") return "completed";
+  if (s === "to_do" || s === "todo") return "todo";
+  if (s === "in_progress" || s === "inprogress") return "in_progress";
+  if (s === "review") return "review";
+  return (STATUS_VALUES as readonly string[]).includes(s) ? (s as TaskStatus) : "";
+}
+
+function normalizePriority(v: unknown): TaskPriority | "" {
+  const p = norm(v).replace(/-/g, "_").replace(/\s+/g, "_");
+  if (!p) return "";
+  if (p === "urgent") return "urgent";
+  if (p === "high") return "high";
+  if (p === "medium" || p === "normal") return "medium";
+  if (p === "low") return "low";
+  return (PRIORITY_VALUES as readonly string[]).includes(p) ? (p as TaskPriority) : "";
+}
+
 function parseDateSafe(v: unknown): Date | null {
   if (!v) return null;
   const d = new Date(String(v));
@@ -37,169 +68,233 @@ async function getTaskIfAllowed(taskId: string, userId: string) {
   return rows[0] ?? null;
 }
 
-export async function GET(
-  _req: Request,
-  ctx: { params: Promise<{ id: string }> | { id: string } }
-) {
-  const session = await getSession();
-  if (!session) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
+async function getPrefsMapAny(executor: any, userIds: string[]) {
+  if (!userIds.length) return new Map<string, { taskAssigned: boolean; taskUpdated: boolean }>();
 
-  const { id } = await Promise.resolve(ctx.params as any);
+  const rows = await executor
+    .select({
+      userId: notificationPrefs.userId,
+      taskAssigned: notificationPrefs.taskAssigned,
+      taskUpdated: notificationPrefs.taskUpdated,
+    })
+    .from(notificationPrefs)
+    .where(inArray(notificationPrefs.userId, userIds));
 
-  const task = await getTaskIfAllowed(id, session.id);
-  if (!task) {
-    const res404 = NextResponse.json({ message: "Task not found." }, { status: 404 });
-    res404.headers.set("Cache-Control", "no-store");
-    return res404;
-  }
-
-  const res = NextResponse.json({ task }, { status: 200 });
-  res.headers.set("Cache-Control", "no-store");
-  return res;
+  const m = new Map<string, { taskAssigned: boolean; taskUpdated: boolean }>();
+  for (const r of rows) m.set(r.userId, { taskAssigned: r.taskAssigned, taskUpdated: r.taskUpdated });
+  return m;
 }
 
-export async function PATCH(
-  req: Request,
-  ctx: { params: Promise<{ id: string }> | { id: string } }
-) {
+export async function GET(_req: Request, { params }: { params: { id: string } }) {
   const session = await getSession();
-  if (!session) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
+  if (!session) return noStoreJson({ message: "Unauthorized" }, 401);
 
-  const { id } = await Promise.resolve(ctx.params as any);
+  const id = params?.id;
+  if (!id) return noStoreJson({ message: "Missing task id." }, 400);
+
+  const task = await getTaskIfAllowed(id, session.id);
+  if (!task) return noStoreJson({ message: "Task not found." }, 404);
+
+  return noStoreJson({ task }, 200);
+}
+
+export async function PATCH(req: Request, { params }: { params: { id: string } }) {
+  const session = await getSession();
+  if (!session) return noStoreJson({ message: "Unauthorized" }, 401);
+
+  const id = params?.id;
+  if (!id) return noStoreJson({ message: "Missing task id." }, 400);
+
   const body = await req.json().catch(() => ({}));
 
-  // Load task first (also ensures authorization)
   const existing = await getTaskIfAllowed(id, session.id);
-  if (!existing) {
-    const res404 = NextResponse.json({ message: "Task not found." }, { status: 404 });
-    res404.headers.set("Cache-Control", "no-store");
-    return res404;
-  }
+  if (!existing) return noStoreJson({ message: "Task not found." }, 404);
+
+  const oldAssigneeId = existing.assigneeId;
 
   const patch: any = {};
+  let statusChanged = false;
+  let priorityChanged = false;
+  let assigneeChanged = false;
 
-  // title (max 100)
   if (typeof body?.title === "string") {
     const t = body.title.trim();
-    if (!t) return NextResponse.json({ message: "Title is required." }, { status: 400 });
-    if (t.length > 100)
-      return NextResponse.json({ message: "Title must be at most 100 characters." }, { status: 400 });
+    if (!t) return noStoreJson({ message: "Title is required." }, 400);
+    if (t.length > 100) return noStoreJson({ message: "Title must be at most 100 characters." }, 400);
     patch.title = t;
   }
 
-  // description (multi-line text)
   if (typeof body?.description === "string") {
-    patch.description = body.description.trim();
+    patch.description = body.description;
   }
 
-  // status enum
   if (typeof body?.status === "string") {
-    if (!isTaskStatus(body.status)) {
-      return NextResponse.json(
-        { message: `Invalid status. Allowed: ${STATUS_VALUES.join(", ")}` },
-        { status: 400 }
+    const s = normalizeStatus(body.status);
+    if (!s) {
+      return noStoreJson(
+        { message: `Invalid status. Allowed: ${STATUS_VALUES.join(", ")} (legacy 'done' accepted)` },
+        400
       );
     }
-    patch.status = body.status;
+    statusChanged = s !== existing.status;
+    patch.status = s;
   }
 
-  // priority enum
   if (typeof body?.priority === "string") {
-    if (!isTaskPriority(body.priority)) {
-      return NextResponse.json(
-        { message: `Invalid priority. Allowed: ${PRIORITY_VALUES.join(", ")}` },
-        { status: 400 }
-      );
+    const p = normalizePriority(body.priority);
+    if (!p) {
+      return noStoreJson({ message: `Invalid priority. Allowed: ${PRIORITY_VALUES.join(", ")}` }, 400);
     }
-    patch.priority = body.priority;
+    priorityChanged = p !== existing.priority;
+    patch.priority = p;
   }
 
-  // dueAt (required by spec) – allow change but do NOT allow null
-  if ("dueAt" in body) {
-    const d = parseDateSafe(body?.dueAt);
-    if (!d) {
-      return NextResponse.json(
-        { message: "dueAt is required and must be a valid date." },
-        { status: 400 }
-      );
-    }
+  if ("dueAt" in body || "dueDate" in body) {
+    const d = parseDateSafe(body?.dueAt ?? body?.dueDate);
+    if (!d) return noStoreJson({ message: "dueAt/dueDate is required and must be a valid date." }, 400);
     patch.dueAt = d;
   }
 
-  // assigneeId (only creator can reassign – recommended)
-  if (typeof body?.assigneeId === "string") {
-    const nextAssigneeId = body.assigneeId.trim();
-    if (!nextAssigneeId) {
-      return NextResponse.json({ message: "assigneeId cannot be empty." }, { status: 400 });
-    }
+  const requestedAssignee =
+    typeof body?.assignedToId === "string"
+      ? body.assignedToId.trim()
+      : typeof body?.assigneeId === "string"
+      ? body.assigneeId.trim()
+      : "";
 
+  const willReassign = Boolean(requestedAssignee) && requestedAssignee !== existing.assigneeId;
+
+  if (willReassign) {
     if (existing.creatorId !== session.id) {
-      return NextResponse.json(
-        { message: "Only the task creator can reassign the task." },
-        { status: 403 }
-      );
+      return noStoreJson({ message: "Only the task creator can reassign the task." }, 403);
     }
 
     const [assignee] = await db
       .select({ id: users.id })
       .from(users)
-      .where(eq(users.id, nextAssigneeId))
+      .where(eq(users.id, requestedAssignee))
       .limit(1);
 
-    if (!assignee) {
-      return NextResponse.json({ message: "Invalid assigneeId (user not found)." }, { status: 400 });
-    }
+    if (!assignee) return noStoreJson({ message: "Invalid assignedToId/assigneeId (user not found)." }, 400);
 
-    patch.assigneeId = nextAssigneeId;
+    assigneeChanged = true;
+    patch.assigneeId = requestedAssignee;
   }
 
-  // nothing to update
   if (Object.keys(patch).length === 0) {
-    return NextResponse.json({ message: "Nothing to update." }, { status: 400 });
+    return noStoreJson({ message: "Nothing to update." }, 400);
   }
 
   patch.updatedAt = sql`now()`;
 
-  const updated = await db
-    .update(tasks)
-    .set(patch)
-    .where(and(eq(tasks.id, id), or(eq(tasks.creatorId, session.id), eq(tasks.assigneeId, session.id))))
-    .returning();
+  // --- Update + notifications atomically ---
+  const result = await db.transaction(async (tx) => {
+    const updated = await tx
+      .update(tasks)
+      .set(patch)
+      .where(and(eq(tasks.id, id), or(eq(tasks.creatorId, session.id), eq(tasks.assigneeId, session.id))))
+      .returning();
 
-  const task = updated[0];
-  if (!task) {
-    const res404 = NextResponse.json({ message: "Task not found." }, { status: 404 });
-    res404.headers.set("Cache-Control", "no-store");
-    return res404;
+    const task = updated[0];
+    if (!task) return { task: null as any, notifs: [] as any[] };
+
+    const prefUsers = uniq([task.creatorId, task.assigneeId, oldAssigneeId]);
+    const prefsMap = await getPrefsMapAny(tx, prefUsers);
+    const prefsOf = (uid: string) => prefsMap.get(uid) ?? { taskAssigned: true, taskUpdated: true };
+
+    const createdNotifs: any[] = [];
+
+    // Mandatory-safe: always persist assignment notification on reassignment
+    if (willReassign && patch.assigneeId) {
+      const newAssigneeId = patch.assigneeId as string;
+
+      const [notif] = await tx
+        .insert(notifications)
+        .values({
+          userId: newAssigneeId,
+          title: "Task assigned to you",
+          body: `“${task.title}” was assigned to you.`,
+          read: false,
+        })
+        .returning();
+
+      if (notif) createdNotifs.push({ userId: newAssigneeId, notification: notif });
+    }
+
+    // Optional: notify assignee on status/priority change (prefs-respecting)
+    if ((statusChanged || priorityChanged) && task.assigneeId && task.assigneeId !== session.id) {
+      if (prefsOf(task.assigneeId).taskUpdated) {
+        const what =
+          statusChanged && priorityChanged ? "Status and priority" : statusChanged ? "Status" : "Priority";
+
+        const [notif] = await tx
+          .insert(notifications)
+          .values({
+            userId: task.assigneeId,
+            title: "Task updated",
+            body: `${what} updated for “${task.title}”.`,
+            read: false,
+          })
+          .returning();
+
+        if (notif) createdNotifs.push({ userId: task.assigneeId, notification: notif });
+      }
+    }
+
+    return { task, notifs: createdNotifs };
+  });
+
+  const task = result.task;
+  if (!task) return noStoreJson({ message: "Task not found." }, 404);
+
+  const recipients = uniq([task.creatorId, task.assigneeId, oldAssigneeId, session.id]);
+
+  // --- Realtime emits after commit ---
+  try {
+    await emitUsers(recipients, "task:updated", {
+      task,
+      meta: {
+        previousAssigneeId: oldAssigneeId,
+        changed: { status: statusChanged, priority: priorityChanged, assignee: assigneeChanged },
+      },
+    });
+  } catch {}
+
+  for (const n of result.notifs) {
+    try {
+      await emitUser(n.userId, "notification:new", { notification: n.notification });
+    } catch {}
   }
 
-  const res = NextResponse.json({ ok: true, task }, { status: 200 });
-  res.headers.set("Cache-Control", "no-store");
-  return res;
+  return noStoreJson({ ok: true, task }, 200);
 }
 
-export async function DELETE(
-  _req: Request,
-  ctx: { params: Promise<{ id: string }> | { id: string } }
-) {
+export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
   const session = await getSession();
-  if (!session) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
+  if (!session) return noStoreJson({ message: "Unauthorized" }, 401);
 
-  const { id } = await Promise.resolve(ctx.params as any);
+  const id = params?.id;
+  if (!id) return noStoreJson({ message: "Missing task id." }, 400);
 
-  // (Recommended) only creator can delete
+  const existing = await getTaskIfAllowed(id, session.id);
+  if (!existing) return noStoreJson({ message: "Task not found." }, 404);
+
+  if (existing.creatorId !== session.id) {
+    return noStoreJson({ message: "Only the task creator can delete this task." }, 403);
+  }
+
   const deleted = await db
     .delete(tasks)
     .where(and(eq(tasks.id, id), eq(tasks.creatorId, session.id)))
     .returning({ id: tasks.id });
 
-  if (!deleted.length) {
-    const res404 = NextResponse.json({ message: "Task not found." }, { status: 404 });
-    res404.headers.set("Cache-Control", "no-store");
-    return res404;
-  }
+  if (!deleted.length) return noStoreJson({ message: "Task not found." }, 404);
 
-  const res = NextResponse.json({ ok: true }, { status: 200 });
-  res.headers.set("Cache-Control", "no-store");
-  return res;
+  const recipients = uniq([existing.creatorId, existing.assigneeId, session.id]);
+
+  try {
+    await emitUsers(recipients, "task:deleted", { id });
+  } catch {}
+
+  return noStoreJson({ ok: true }, 200);
 }
