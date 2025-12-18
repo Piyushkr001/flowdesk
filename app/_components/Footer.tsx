@@ -1,5 +1,6 @@
 "use client";
 
+import * as React from "react";
 import Link from "next/link";
 import {
   Github,
@@ -16,7 +17,41 @@ import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { XLogoIcon } from "@phosphor-icons/react";
 
+function apiBase() {
+  return process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "";
+}
+
 export default function Footer() {
+  const [signedIn, setSignedIn] = React.useState(false);
+
+  React.useEffect(() => {
+    let mounted = true;
+
+    (async () => {
+      try {
+        // Cookie-based auth: include cookies
+        const res = await fetch(`${apiBase()}/api/v1/auth/me`, {
+          method: "GET",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          cache: "no-store",
+        });
+
+        if (!mounted) return;
+
+        // If 200 => signed in, else signed out
+        setSignedIn(res.ok);
+      } catch {
+        if (!mounted) return;
+        setSignedIn(false);
+      }
+    })();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   return (
     <footer className="border-t border-black/5 dark:border-white/10 bg-linear-to-b from-white to-slate-50 dark:from-slate-950 dark:to-slate-900">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-12">
@@ -45,9 +80,17 @@ export default function Footer() {
               <Button variant="outline" size="sm" className="rounded-full" asChild>
                 <Link href="/features">Features</Link>
               </Button>
-              <Button size="sm" className="rounded-full" asChild>
-                <Link href="/signup">Get Started</Link>
-              </Button>
+
+              {/* ✅ Disabled when signed in */}
+              {signedIn ? (
+                <Button size="sm" className="rounded-full" disabled aria-disabled="true">
+                  Get Started
+                </Button>
+              ) : (
+                <Button size="sm" className="rounded-full" asChild>
+                  <Link href="/signup">Get Started</Link>
+                </Button>
+              )}
             </div>
           </div>
 
@@ -100,63 +143,36 @@ export default function Footer() {
               </div>
 
               <div className="mt-4 flex flex-wrap items-center gap-2">
-                {/* Social buttons */}
                 <Button variant="outline" size="icon" className="rounded-xl" asChild>
-                  <Link
-                    href="https://github.com/"
-                    target="_blank"
-                    rel="noreferrer"
-                    aria-label="GitHub"
-                  >
+                  <Link href="https://github.com/" target="_blank" rel="noreferrer" aria-label="GitHub">
                     <Github className="h-4 w-4" />
                   </Link>
                 </Button>
 
                 <Button variant="outline" size="icon" className="rounded-xl" asChild>
-                  <Link
-                    href="https://www.linkedin.com/"
-                    target="_blank"
-                    rel="noreferrer"
-                    aria-label="LinkedIn"
-                  >
+                  <Link href="https://www.linkedin.com/" target="_blank" rel="noreferrer" aria-label="LinkedIn">
                     <Linkedin className="h-4 w-4" />
                   </Link>
                 </Button>
 
                 <Button variant="outline" size="icon" className="rounded-xl" asChild>
-                  <Link
-                    href="https://twitter.com/"
-                    target="_blank"
-                    rel="noreferrer"
-                    aria-label="Twitter / X"
-                  >
+                  <Link href="https://twitter.com/" target="_blank" rel="noreferrer" aria-label="Twitter / X">
                     <XLogoIcon className="h-4 w-4" />
                   </Link>
                 </Button>
 
                 <Button variant="outline" size="icon" className="rounded-xl" asChild>
-                  <Link
-                    href="https://www.youtube.com/"
-                    target="_blank"
-                    rel="noreferrer"
-                    aria-label="YouTube"
-                  >
+                  <Link href="https://www.youtube.com/" target="_blank" rel="noreferrer" aria-label="YouTube">
                     <Youtube className="h-4 w-4" />
                   </Link>
                 </Button>
 
                 <Button variant="outline" size="icon" className="rounded-xl" asChild>
-                  <Link
-                    href="https://www.instagram.com/"
-                    target="_blank"
-                    rel="noreferrer"
-                    aria-label="Instagram"
-                  >
+                  <Link href="https://www.instagram.com/" target="_blank" rel="noreferrer" aria-label="Instagram">
                     <Instagram className="h-4 w-4" />
                   </Link>
                 </Button>
 
-                {/* Primary action */}
                 <Button variant="outline" size="sm" className="rounded-xl" asChild>
                   <Link href="/contact">Contact Us</Link>
                 </Button>
@@ -199,30 +215,16 @@ export default function Footer() {
   );
 }
 
-function FooterCol({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
+function FooterCol({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-3">
-      <div className="text-sm font-semibold text-slate-900 dark:text-slate-50">
-        {title}
-      </div>
+      <div className="text-sm font-semibold text-slate-900 dark:text-slate-50">{title}</div>
       <div className="flex flex-col gap-2">{children}</div>
     </div>
   );
 }
 
-function FooterLink({
-  href,
-  children,
-}: {
-  href: string;
-  children: React.ReactNode;
-}) {
+function FooterLink({ href, children }: { href: string; children: React.ReactNode }) {
   return (
     <Link
       href={href}
