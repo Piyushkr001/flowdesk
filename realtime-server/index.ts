@@ -10,7 +10,7 @@ const app = express();
 // avoid accidental huge payloads
 app.use(express.json({ limit: "1mb" }));
 
-const ORIGIN_RAW = process.env.CORS_ORIGIN || "http://localhost:3000";
+const ORIGIN_RAW = process.env.CORS_ORIGIN || "http://localhost:3000" || "https://flowdesk-72sm.vercel.app/";
 const ORIGINS = ORIGIN_RAW.split(",").map((s) => s.trim()).filter(Boolean);
 
 app.use(
