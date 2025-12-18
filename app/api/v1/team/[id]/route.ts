@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { eq, sql } from "drizzle-orm";
 
 import { db } from "@/config/db";
@@ -15,11 +15,16 @@ function noStoreJson(data: any, status = 200) {
   return res;
 }
 
-export async function GET(_req: Request, ctx: { params: { id: string } }) {
+type Ctx = {
+  params: Promise<{ id: string }>;
+};
+
+export async function GET(_req: NextRequest, ctx: Ctx) {
   const session = await getSession();
   if (!session) return noStoreJson({ message: "Unauthorized" }, 401);
 
-  const id = String(ctx.params?.id || "").trim();
+  const { id: rawId } = await ctx.params;
+  const id = String(rawId || "").trim();
   if (!id) return noStoreJson({ message: "Missing user id." }, 400);
 
   // ✅ Enum-safe "open" status check (works for enum/text and legacy 'done')
