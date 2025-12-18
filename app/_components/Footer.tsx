@@ -17,41 +17,7 @@ import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { XLogoIcon } from "@phosphor-icons/react";
 
-function apiBase() {
-  return process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "";
-}
-
 export default function Footer() {
-  const [signedIn, setSignedIn] = React.useState(false);
-
-  React.useEffect(() => {
-    let mounted = true;
-
-    (async () => {
-      try {
-        // Cookie-based auth: include cookies
-        const res = await fetch(`${apiBase()}/api/v1/auth/me`, {
-          method: "GET",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          cache: "no-store",
-        });
-
-        if (!mounted) return;
-
-        // If 200 => signed in, else signed out
-        setSignedIn(res.ok);
-      } catch {
-        if (!mounted) return;
-        setSignedIn(false);
-      }
-    })();
-
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
   return (
     <footer className="border-t border-black/5 dark:border-white/10 bg-linear-to-b from-white to-slate-50 dark:from-slate-950 dark:to-slate-900">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-12">
@@ -80,17 +46,6 @@ export default function Footer() {
               <Button variant="outline" size="sm" className="rounded-full" asChild>
                 <Link href="/features">Features</Link>
               </Button>
-
-              {/* ✅ Disabled when signed in */}
-              {signedIn ? (
-                <Button size="sm" className="rounded-full" disabled aria-disabled="true">
-                  Get Started
-                </Button>
-              ) : (
-                <Button size="sm" className="rounded-full" asChild>
-                  <Link href="/signup">Get Started</Link>
-                </Button>
-              )}
             </div>
           </div>
 
