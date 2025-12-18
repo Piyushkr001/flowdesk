@@ -247,7 +247,44 @@ function safeViewFromQuery(v: string | null): TaskView {
   return "all";
 }
 
+/**
+ * ✅ Next.js 16 fix:
+ * useSearchParams() must be inside a Suspense boundary.
+ * We keep your logic unchanged by moving the original page into TasksPageInner.
+ */
 export default function TasksPage() {
+  return (
+    <React.Suspense fallback={<TasksPageFallback />}>
+      <TasksPageInner />
+    </React.Suspense>
+  );
+}
+
+function TasksPageFallback() {
+  return (
+    <main className="min-h-[calc(100vh-64px)] px-4 sm:px-6 lg:px-8 py-8">
+      <div className="mx-auto max-w-6xl">
+        <div className="space-y-2">
+          <div className="h-8 w-48 rounded bg-black/10 dark:bg-white/10" />
+          <div className="h-4 w-96 rounded bg-black/10 dark:bg-white/10" />
+        </div>
+        <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <div
+              key={i}
+              className="h-20 rounded-2xl bg-black/5 dark:bg-white/10"
+            />
+          ))}
+        </div>
+        <div className="mt-6 h-28 rounded-2xl bg-black/5 dark:bg-white/10" />
+        <div className="mt-6 h-80 rounded-2xl bg-black/5 dark:bg-white/10" />
+      </div>
+    </main>
+  );
+}
+
+/** ✅ Your original component logic starts here (unchanged) */
+function TasksPageInner() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -492,429 +529,438 @@ export default function TasksPage() {
     else sp.set("view", next);
     const qs = sp.toString();
 
-    // optional UX improvement: avoid scroll jumps
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
   }
 
   return (
-    <main className="min-h-[calc(100vh-64px)] px-4 sm:px-6 lg:px-8 py-8">
-      <div className="mx-auto max-w-6xl">
-        {/* Header */}
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div className="space-y-1">
-            <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">My Tasks</h1>
-            <p className="text-sm text-muted-foreground">
-              Create, filter, and manage tasks. Updates are live via Socket.io.
-            </p>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              className="rounded-xl"
-              onClick={onManualRefresh}
-              disabled={refreshing}
-            >
-              {refreshing ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <RefreshCcw className="mr-2 h-4 w-4" />
-              )}
-              Refresh
-            </Button>
-
-            <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
-              <SheetTrigger asChild>
-                <Button
-                  className="rounded-xl bg-linear-to-r from-sky-500 to-indigo-600 text-white hover:opacity-95"
-                  onClick={openCreate}
-                >
-                  <Plus className="mr-2 h-4 w-4" />
-                  New Task
-                </Button>
-              </SheetTrigger>
-
-              <SheetContent side="right" className="w-95 sm:w-110 p-0">
-                <SheetHeader className="p-6 pb-3">
-                  <SheetTitle className="text-lg">
-                    {mode === "create" ? "Create task" : "Edit task"}
-                  </SheetTitle>
-                </SheetHeader>
-                <Separator />
-
-                <ScrollArea className="h-[calc(100vh-140px)]">
-                  <div className="p-6 space-y-5">
-                    <div className="grid gap-2">
-                      <Label htmlFor="title">Title</Label>
-                      <Input
-                        id="title"
-                        className="h-11 rounded-xl"
-                        value={draft.title}
-                        onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))}
-                        placeholder="e.g., Review PR for notifications"
-                      />
-                    </div>
-
-                    <div className="grid gap-2">
-                      <Label htmlFor="description">Description</Label>
-                      <textarea
-                        id="description"
-                        className={cn(
-                          "min-h-27.5 w-full rounded-xl border border-input bg-background px-3 py-2 text-sm",
-                          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                        )}
-                        value={draft.description}
-                        onChange={(e) =>
-                          setDraft((d) => ({ ...d, description: e.target.value }))
-                        }
-                        placeholder="Multi-line details…"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {/* Status */}
-                      <div className="grid gap-2">
-                        <Label>Status</Label>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="outline" className="h-11 rounded-xl justify-between">
-                              {statusLabel(draft.status)}
-                              <span className="text-muted-foreground">▾</span>
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="start" className="w-56">
-                            <DropdownMenuLabel>Status</DropdownMenuLabel>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuRadioGroup
-                              value={draft.status}
-                              onValueChange={(v) =>
-                                setDraft((d) => ({ ...d, status: v as any }))
-                              }
-                            >
-                              <DropdownMenuRadioItem value="todo">To do</DropdownMenuRadioItem>
-                              <DropdownMenuRadioItem value="in_progress">
-                                In progress
-                              </DropdownMenuRadioItem>
-                              <DropdownMenuRadioItem value="review">Review</DropdownMenuRadioItem>
-                              <DropdownMenuRadioItem value="completed">
-                                Completed
-                              </DropdownMenuRadioItem>
-                            </DropdownMenuRadioGroup>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </div>
-
-                      {/* Priority */}
-                      <div className="grid gap-2">
-                        <Label>Priority</Label>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="outline" className="h-11 rounded-xl justify-between">
-                              {priorityLabel(draft.priority)}
-                              <span className="text-muted-foreground">▾</span>
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="start" className="w-56">
-                            <DropdownMenuLabel>Priority</DropdownMenuLabel>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuRadioGroup
-                              value={draft.priority}
-                              onValueChange={(v) =>
-                                setDraft((d) => ({ ...d, priority: v as any }))
-                              }
-                            >
-                              <DropdownMenuRadioItem value="low">Low</DropdownMenuRadioItem>
-                              <DropdownMenuRadioItem value="medium">Medium</DropdownMenuRadioItem>
-                              <DropdownMenuRadioItem value="high">High</DropdownMenuRadioItem>
-                              <DropdownMenuRadioItem value="urgent">Urgent</DropdownMenuRadioItem>
-                            </DropdownMenuRadioGroup>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </div>
-                    </div>
-
-                    <div className="grid gap-2">
-                      <Label htmlFor="dueAt">Due date</Label>
-                      <Input
-                        id="dueAt"
-                        type="datetime-local"
-                        className="h-11 rounded-xl"
-                        value={draft.dueAt}
-                        onChange={(e) => setDraft((d) => ({ ...d, dueAt: e.target.value }))}
-                      />
-                      <p className="text-xs text-muted-foreground">Required.</p>
-                    </div>
-
-                    <div className="flex flex-col sm:flex-row gap-2 sm:justify-end pt-2">
-                      <Button
-                        variant="outline"
-                        className="h-11 rounded-xl"
-                        onClick={() => setSheetOpen(false)}
-                        disabled={saving}
-                      >
-                        Cancel
-                      </Button>
-                      <Button
-                        className="h-11 rounded-xl bg-linear-to-r from-sky-500 to-indigo-600 text-white hover:opacity-95"
-                        onClick={onSave}
-                        disabled={saving}
-                      >
-                        {saving ? "Saving..." : mode === "create" ? "Create task" : "Save changes"}
-                      </Button>
-                    </div>
-                  </div>
-                </ScrollArea>
-              </SheetContent>
-            </Sheet>
-          </div>
-        </div>
-
-        {/* Stats */}
-        <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-          <StatCard title="Total" value={stats.total} icon={<Circle className="h-4 w-4" />} />
-          <StatCard title="To do" value={stats.todo} icon={<Circle className="h-4 w-4" />} />
-          <StatCard
-            title="In progress"
-            value={stats.inProgress}
-            icon={<CalendarClock className="h-4 w-4" />}
-          />
-          <StatCard title="Review" value={stats.review} icon={<Pencil className="h-4 w-4" />} />
-          <StatCard
-            title="Completed"
-            value={stats.completed}
-            icon={<CheckCircle2 className="h-4 w-4" />}
-          />
-        </div>
-
-        {/* Filters */}
-        <Card className="mt-6 rounded-2xl border-black/5 dark:border-white/10 bg-white/70 dark:bg-slate-950/40 backdrop-blur">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">Filters</CardTitle>
-            <CardDescription>Search and narrow down tasks.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="flex flex-col lg:flex-row gap-3 lg:items-center lg:justify-between">
-              <div className="flex-1 relative">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={q}
-                  onChange={(e) => setQ(e.target.value)}
-                  placeholder="Search tasks by title/description..."
-                  className="h-11 rounded-xl pl-9"
-                />
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                {/* Personal View */}
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="outline" className="h-11 rounded-xl">
-                      View: {viewLabel(view)}
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-56">
-                    <DropdownMenuLabel>Personal view</DropdownMenuLabel>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuRadioGroup
-                      value={view}
-                      onValueChange={(v) => {
-                        const next = v as TaskView;
-                        setView(next);
-                        setUrlView(next);
-                      }}
-                    >
-                      <DropdownMenuRadioItem value="all">All</DropdownMenuRadioItem>
-                      <DropdownMenuRadioItem value="assigned">Assigned to me</DropdownMenuRadioItem>
-                      <DropdownMenuRadioItem value="created">Created by me</DropdownMenuRadioItem>
-                      <DropdownMenuRadioItem value="overdue">Overdue</DropdownMenuRadioItem>
-                    </DropdownMenuRadioGroup>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-
-                {/* Status */}
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="outline" className="h-11 rounded-xl">
-                      Status: {status === "all" ? "All" : statusLabel(status)}
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-56">
-                    <DropdownMenuLabel>Status</DropdownMenuLabel>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuRadioGroup value={status} onValueChange={(v) => setStatus(v as any)}>
-                      <DropdownMenuRadioItem value="all">All</DropdownMenuRadioItem>
-                      <DropdownMenuRadioItem value="todo">To do</DropdownMenuRadioItem>
-                      <DropdownMenuRadioItem value="in_progress">In progress</DropdownMenuRadioItem>
-                      <DropdownMenuRadioItem value="review">Review</DropdownMenuRadioItem>
-                      <DropdownMenuRadioItem value="completed">Completed</DropdownMenuRadioItem>
-                    </DropdownMenuRadioGroup>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-
-                {/* Priority */}
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="outline" className="h-11 rounded-xl">
-                      Priority: {priority === "all" ? "All" : priorityLabel(priority)}
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-56">
-                    <DropdownMenuLabel>Priority</DropdownMenuLabel>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuRadioGroup
-                      value={priority}
-                      onValueChange={(v) => setPriority(v as any)}
-                    >
-                      <DropdownMenuRadioItem value="all">All</DropdownMenuRadioItem>
-                      <DropdownMenuRadioItem value="low">Low</DropdownMenuRadioItem>
-                      <DropdownMenuRadioItem value="medium">Medium</DropdownMenuRadioItem>
-                      <DropdownMenuRadioItem value="high">High</DropdownMenuRadioItem>
-                      <DropdownMenuRadioItem value="urgent">Urgent</DropdownMenuRadioItem>
-                    </DropdownMenuRadioGroup>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-
-                {/* Sort */}
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="outline" className="h-11 rounded-xl">
-                      Sort: {sort === "updated" ? "Recently updated" : "Due date"}
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-56">
-                    <DropdownMenuLabel>Sort</DropdownMenuLabel>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuRadioGroup value={sort} onValueChange={(v) => setSort(v as any)}>
-                      <DropdownMenuRadioItem value="updated">
-                        Recently updated
-                      </DropdownMenuRadioItem>
-                      <DropdownMenuRadioItem value="due">Due date</DropdownMenuRadioItem>
-                    </DropdownMenuRadioGroup>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-
-                <Button
-                  variant="outline"
-                  className="h-11 rounded-xl"
-                  onClick={() => {
-                    setQ("");
-                    setView("all");
-                    setStatus("all");
-                    setPriority("all");
-                    setSort("updated");
-                    setUrlView("all");
-                  }}
-                >
-                  Reset
-                </Button>
-              </div>
+    <>
+      {/* ✅ Your original return JSX (unchanged) */}
+      <main className="min-h-[calc(100vh-64px)] px-4 sm:px-6 lg:px-8 py-8">
+        <div className="mx-auto max-w-6xl">
+          {/* Header */}
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div className="space-y-1">
+              <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">My Tasks</h1>
+              <p className="text-sm text-muted-foreground">
+                Create, filter, and manage tasks. Updates are live via Socket.io.
+              </p>
             </div>
-          </CardContent>
-        </Card>
 
-        {/* List */}
-        <div className="mt-6">
-          {loading ? (
-            <div className="text-sm text-muted-foreground">Loading tasks…</div>
-          ) : tasks.length === 0 ? (
-            <Card className="rounded-2xl border-black/5 dark:border-white/10 bg-white/70 dark:bg-slate-950/40 backdrop-blur">
-              <CardHeader>
-                <CardTitle className="text-base">No tasks found</CardTitle>
-                <CardDescription>Try changing filters, or create your first task.</CardDescription>
-              </CardHeader>
-              <CardContent className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
-                <div className="text-sm text-muted-foreground">
-                  Your workspace looks clean—add something to start tracking work.
-                </div>
-                <Button
-                  className="rounded-xl bg-linear-to-r from-sky-500 to-indigo-600 text-white hover:opacity-95"
-                  onClick={openCreate}
-                >
-                  <Plus className="mr-2 h-4 w-4" />
-                  Create task
-                </Button>
-              </CardContent>
-            </Card>
-          ) : (
-            <div className="grid gap-3">
-              {tasks.map((t) => {
-                const s = normalizeStatus(t.status);
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                className="rounded-xl"
+                onClick={onManualRefresh}
+                disabled={refreshing}
+              >
+                {refreshing ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCcw className="mr-2 h-4 w-4" />
+                )}
+                Refresh
+              </Button>
 
-                return (
-                  <Card
-                    key={t.id}
-                    className="rounded-2xl border-black/5 dark:border-white/10 bg-white/70 dark:bg-slate-950/40 backdrop-blur"
+              <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
+                <SheetTrigger asChild>
+                  <Button
+                    className="rounded-xl bg-linear-to-r from-sky-500 to-indigo-600 text-white hover:opacity-95"
+                    onClick={openCreate}
                   >
-                    <CardContent className="p-4">
-                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <h3 className="truncate font-semibold text-slate-900 dark:text-slate-50">
-                              {t.title}
-                            </h3>
-                            <StatusBadge status={s} />
-                            <PriorityBadge priority={t.priority} />
-                          </div>
+                    <Plus className="mr-2 h-4 w-4" />
+                    New Task
+                  </Button>
+                </SheetTrigger>
 
-                          <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                            <span className="inline-flex items-center gap-1">
-                              <CalendarClock className="h-3.5 w-3.5" />
-                              {formatDue(t.dueAt)}
-                            </span>
-                            <span>•</span>
-                            <span>Updated: {new Date(t.updatedAt).toLocaleString()}</span>
-                          </div>
-                        </div>
+                <SheetContent side="right" className="w-95 sm:w-110 p-0">
+                  <SheetHeader className="p-6 pb-3">
+                    <SheetTitle className="text-lg">
+                      {mode === "create" ? "Create task" : "Edit task"}
+                    </SheetTitle>
+                  </SheetHeader>
+                  <Separator />
 
-                        <div className="flex items-center gap-2 sm:justify-end">
-                          {s !== "completed" ? (
-                            <Button
-                              variant="outline"
-                              className="rounded-xl"
-                              onClick={() => quickMarkCompleted(t.id)}
-                            >
-                              <CheckCircle2 className="mr-2 h-4 w-4" />
-                              Mark completed
-                            </Button>
-                          ) : (
-                            <Badge variant="secondary" className="rounded-full">
-                              Completed
-                            </Badge>
+                  <ScrollArea className="h-[calc(100vh-140px)]">
+                    <div className="p-6 space-y-5">
+                      <div className="grid gap-2">
+                        <Label htmlFor="title">Title</Label>
+                        <Input
+                          id="title"
+                          className="h-11 rounded-xl"
+                          value={draft.title}
+                          onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))}
+                          placeholder="e.g., Review PR for notifications"
+                        />
+                      </div>
+
+                      <div className="grid gap-2">
+                        <Label htmlFor="description">Description</Label>
+                        <textarea
+                          id="description"
+                          className={cn(
+                            "min-h-27.5 w-full rounded-xl border border-input bg-background px-3 py-2 text-sm",
+                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                           )}
+                          value={draft.description}
+                          onChange={(e) =>
+                            setDraft((d) => ({ ...d, description: e.target.value }))
+                          }
+                          placeholder="Multi-line details…"
+                        />
+                      </div>
 
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div className="grid gap-2">
+                          <Label>Status</Label>
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
-                              <Button variant="outline" size="icon" className="rounded-xl">
-                                <MoreVertical className="h-4 w-4" />
+                              <Button variant="outline" className="h-11 rounded-xl justify-between">
+                                {statusLabel(draft.status)}
+                                <span className="text-muted-foreground">▾</span>
                               </Button>
                             </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end" className="w-48">
-                              <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                            <DropdownMenuContent align="start" className="w-56">
+                              <DropdownMenuLabel>Status</DropdownMenuLabel>
                               <DropdownMenuSeparator />
-                              <DropdownMenuItem onClick={() => openEdit(t)}>
-                                <Pencil className="mr-2 h-4 w-4" />
-                                Edit
-                              </DropdownMenuItem>
-                              <DropdownMenuItem
-                                onClick={() => onDelete(t.id)}
-                                className="text-red-600 focus:text-red-600"
+                              <DropdownMenuRadioGroup
+                                value={draft.status}
+                                onValueChange={(v) =>
+                                  setDraft((d) => ({ ...d, status: v as any }))
+                                }
                               >
-                                <Trash2 className="mr-2 h-4 w-4" />
-                                Delete
-                              </DropdownMenuItem>
+                                <DropdownMenuRadioItem value="todo">To do</DropdownMenuRadioItem>
+                                <DropdownMenuRadioItem value="in_progress">
+                                  In progress
+                                </DropdownMenuRadioItem>
+                                <DropdownMenuRadioItem value="review">Review</DropdownMenuRadioItem>
+                                <DropdownMenuRadioItem value="completed">
+                                  Completed
+                                </DropdownMenuRadioItem>
+                              </DropdownMenuRadioGroup>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+
+                        <div className="grid gap-2">
+                          <Label>Priority</Label>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="outline" className="h-11 rounded-xl justify-between">
+                                {priorityLabel(draft.priority)}
+                                <span className="text-muted-foreground">▾</span>
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="start" className="w-56">
+                              <DropdownMenuLabel>Priority</DropdownMenuLabel>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuRadioGroup
+                                value={draft.priority}
+                                onValueChange={(v) =>
+                                  setDraft((d) => ({ ...d, priority: v as any }))
+                                }
+                              >
+                                <DropdownMenuRadioItem value="low">Low</DropdownMenuRadioItem>
+                                <DropdownMenuRadioItem value="medium">Medium</DropdownMenuRadioItem>
+                                <DropdownMenuRadioItem value="high">High</DropdownMenuRadioItem>
+                                <DropdownMenuRadioItem value="urgent">Urgent</DropdownMenuRadioItem>
+                              </DropdownMenuRadioGroup>
                             </DropdownMenuContent>
                           </DropdownMenu>
                         </div>
                       </div>
-                    </CardContent>
-                  </Card>
-                );
-              })}
+
+                      <div className="grid gap-2">
+                        <Label htmlFor="dueAt">Due date</Label>
+                        <Input
+                          id="dueAt"
+                          type="datetime-local"
+                          className="h-11 rounded-xl"
+                          value={draft.dueAt}
+                          onChange={(e) => setDraft((d) => ({ ...d, dueAt: e.target.value }))}
+                        />
+                        <p className="text-xs text-muted-foreground">Required.</p>
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row gap-2 sm:justify-end pt-2">
+                        <Button
+                          variant="outline"
+                          className="h-11 rounded-xl"
+                          onClick={() => setSheetOpen(false)}
+                          disabled={saving}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          className="h-11 rounded-xl bg-linear-to-r from-sky-500 to-indigo-600 text-white hover:opacity-95"
+                          onClick={onSave}
+                          disabled={saving}
+                        >
+                          {saving ? "Saving..." : mode === "create" ? "Create task" : "Save changes"}
+                        </Button>
+                      </div>
+                    </div>
+                  </ScrollArea>
+                </SheetContent>
+              </Sheet>
             </div>
-          )}
+          </div>
+
+          {/* Stats */}
+          <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+            <StatCard title="Total" value={stats.total} icon={<Circle className="h-4 w-4" />} />
+            <StatCard title="To do" value={stats.todo} icon={<Circle className="h-4 w-4" />} />
+            <StatCard
+              title="In progress"
+              value={stats.inProgress}
+              icon={<CalendarClock className="h-4 w-4" />}
+            />
+            <StatCard title="Review" value={stats.review} icon={<Pencil className="h-4 w-4" />} />
+            <StatCard
+              title="Completed"
+              value={stats.completed}
+              icon={<CheckCircle2 className="h-4 w-4" />}
+            />
+          </div>
+
+          {/* Filters */}
+          <Card className="mt-6 rounded-2xl border-black/5 dark:border-white/10 bg-white/70 dark:bg-slate-950/40 backdrop-blur">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">Filters</CardTitle>
+              <CardDescription>Search and narrow down tasks.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex flex-col lg:flex-row gap-3 lg:items-center lg:justify-between">
+                <div className="flex-1 relative">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={q}
+                    onChange={(e) => setQ(e.target.value)}
+                    placeholder="Search tasks by title/description..."
+                    className="h-11 rounded-xl pl-9"
+                  />
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="outline" className="h-11 rounded-xl">
+                        View: {viewLabel(view)}
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-56">
+                      <DropdownMenuLabel>Personal view</DropdownMenuLabel>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuRadioGroup
+                        value={view}
+                        onValueChange={(v) => {
+                          const next = v as TaskView;
+                          setView(next);
+                          setUrlView(next);
+                        }}
+                      >
+                        <DropdownMenuRadioItem value="all">All</DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="assigned">
+                          Assigned to me
+                        </DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="created">
+                          Created by me
+                        </DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="overdue">Overdue</DropdownMenuRadioItem>
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="outline" className="h-11 rounded-xl">
+                        Status: {status === "all" ? "All" : statusLabel(status)}
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-56">
+                      <DropdownMenuLabel>Status</DropdownMenuLabel>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuRadioGroup
+                        value={status}
+                        onValueChange={(v) => setStatus(v as any)}
+                      >
+                        <DropdownMenuRadioItem value="all">All</DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="todo">To do</DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="in_progress">
+                          In progress
+                        </DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="review">Review</DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="completed">
+                          Completed
+                        </DropdownMenuRadioItem>
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="outline" className="h-11 rounded-xl">
+                        Priority: {priority === "all" ? "All" : priorityLabel(priority)}
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-56">
+                      <DropdownMenuLabel>Priority</DropdownMenuLabel>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuRadioGroup
+                        value={priority}
+                        onValueChange={(v) => setPriority(v as any)}
+                      >
+                        <DropdownMenuRadioItem value="all">All</DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="low">Low</DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="medium">Medium</DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="high">High</DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="urgent">Urgent</DropdownMenuRadioItem>
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="outline" className="h-11 rounded-xl">
+                        Sort: {sort === "updated" ? "Recently updated" : "Due date"}
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-56">
+                      <DropdownMenuLabel>Sort</DropdownMenuLabel>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuRadioGroup value={sort} onValueChange={(v) => setSort(v as any)}>
+                        <DropdownMenuRadioItem value="updated">
+                          Recently updated
+                        </DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="due">Due date</DropdownMenuRadioItem>
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+
+                  <Button
+                    variant="outline"
+                    className="h-11 rounded-xl"
+                    onClick={() => {
+                      setQ("");
+                      setView("all");
+                      setStatus("all");
+                      setPriority("all");
+                      setSort("updated");
+                      setUrlView("all");
+                    }}
+                  >
+                    Reset
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* List */}
+          <div className="mt-6">
+            {loading ? (
+              <div className="text-sm text-muted-foreground">Loading tasks…</div>
+            ) : tasks.length === 0 ? (
+              <Card className="rounded-2xl border-black/5 dark:border-white/10 bg-white/70 dark:bg-slate-950/40 backdrop-blur">
+                <CardHeader>
+                  <CardTitle className="text-base">No tasks found</CardTitle>
+                  <CardDescription>
+                    Try changing filters, or create your first task.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
+                  <div className="text-sm text-muted-foreground">
+                    Your workspace looks clean—add something to start tracking work.
+                  </div>
+                  <Button
+                    className="rounded-xl bg-linear-to-r from-sky-500 to-indigo-600 text-white hover:opacity-95"
+                    onClick={openCreate}
+                  >
+                    <Plus className="mr-2 h-4 w-4" />
+                    Create task
+                  </Button>
+                </CardContent>
+              </Card>
+            ) : (
+              <div className="grid gap-3">
+                {tasks.map((t) => {
+                  const s = normalizeStatus(t.status);
+
+                  return (
+                    <Card
+                      key={t.id}
+                      className="rounded-2xl border-black/5 dark:border-white/10 bg-white/70 dark:bg-slate-950/40 backdrop-blur"
+                    >
+                      <CardContent className="p-4">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <h3 className="truncate font-semibold text-slate-900 dark:text-slate-50">
+                                {t.title}
+                              </h3>
+                              <StatusBadge status={s} />
+                              <PriorityBadge priority={t.priority} />
+                            </div>
+
+                            <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+                              <span className="inline-flex items-center gap-1">
+                                <CalendarClock className="h-3.5 w-3.5" />
+                                {formatDue(t.dueAt)}
+                              </span>
+                              <span>•</span>
+                              <span>Updated: {new Date(t.updatedAt).toLocaleString()}</span>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 sm:justify-end">
+                            {s !== "completed" ? (
+                              <Button
+                                variant="outline"
+                                className="rounded-xl"
+                                onClick={() => quickMarkCompleted(t.id)}
+                              >
+                                <CheckCircle2 className="mr-2 h-4 w-4" />
+                                Mark completed
+                              </Button>
+                            ) : (
+                              <Badge variant="secondary" className="rounded-full">
+                                Completed
+                              </Badge>
+                            )}
+
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="outline" size="icon" className="rounded-xl">
+                                  <MoreVertical className="h-4 w-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end" className="w-48">
+                                <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem onClick={() => openEdit(t)}>
+                                  <Pencil className="mr-2 h-4 w-4" />
+                                  Edit
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onClick={() => onDelete(t.id)}
+                                  className="text-red-600 focus:text-red-600"
+                                >
+                                  <Trash2 className="mr-2 h-4 w-4" />
+                                  Delete
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
-      </div>
-    </main>
+      </main>
+    </>
   );
 }
 
