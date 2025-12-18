@@ -1,6 +1,6 @@
 // app/api/v1/tasks/route.ts
 import { NextResponse } from "next/server";
-import { and, asc, desc, eq, ilike, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, lt, or, sql, isNotNull } from "drizzle-orm";
 
 import { db } from "@/config/db";
 import { tasks, users, notifications, notificationPrefs } from "@/config/schema";
@@ -21,11 +21,9 @@ type TaskView = "all" | "assigned" | "created" | "overdue";
 function isTaskStatus(v: unknown): v is TaskStatus {
   return typeof v === "string" && (STATUS_VALUES as readonly string[]).includes(v);
 }
-
 function isTaskPriority(v: unknown): v is TaskPriority {
   return typeof v === "string" && (PRIORITY_VALUES as readonly string[]).includes(v);
 }
-
 function isTaskView(v: unknown): v is TaskView {
   return v === "all" || v === "assigned" || v === "created" || v === "overdue";
 }
@@ -75,13 +73,15 @@ export async function GET(req: Request) {
 
   const view = normEnum(viewRaw) as TaskView;
   if (!isTaskView(view)) {
-    return noStoreJson({ message: "Invalid view. Allowed: all, assigned, created, overdue" }, 400);
+    return noStoreJson(
+      { message: "Invalid view. Allowed: all, assigned, created, overdue" },
+      400
+    );
   }
 
-  const page = parseIntSafe(url.searchParams.get("page"), 1);
+  const pageRaw = parseIntSafe(url.searchParams.get("page"), 1);
   const pageSizeRaw = parseIntSafe(url.searchParams.get("pageSize"), 20);
   const pageSize = Math.min(Math.max(pageSizeRaw, 1), 100);
-  const offset = (page - 1) * pageSize;
 
   const statusFilter = statusParam ? normEnum(statusParam) : "";
   const priorityFilter = priorityParam ? normEnum(priorityParam) : "";
@@ -95,9 +95,8 @@ export async function GET(req: Request) {
 
   const whereParts: any[] = [];
 
-  // --- Personal Views (Requirement 4) ---
+  // --- Personal Views ---
   if (view === "all") {
-    // current behavior: tasks you created OR are assigned to
     whereParts.push(or(eq(tasks.creatorId, session.id), eq(tasks.assigneeId, session.id)));
   } else if (view === "assigned") {
     whereParts.push(eq(tasks.assigneeId, session.id));
@@ -105,11 +104,13 @@ export async function GET(req: Request) {
     whereParts.push(eq(tasks.creatorId, session.id));
   } else if (view === "overdue") {
     const now = new Date();
-    // legacy-safe open status check: avoid treating completed/done as overdue
     const statusText = sql<string>`${tasks.status}::text`;
     const isOpen = sql<boolean>`(${statusText} NOT IN ('done', 'completed'))`;
 
-    whereParts.push(and(eq(tasks.assigneeId, session.id), isOpen, lt(tasks.dueAt, now)));
+    // ✅ FIX: only overdue if dueAt exists
+    whereParts.push(
+      and(eq(tasks.assigneeId, session.id), isOpen, isNotNull(tasks.dueAt), lt(tasks.dueAt, now))
+    );
   }
 
   // --- Search ---
@@ -119,7 +120,8 @@ export async function GET(req: Request) {
   if (statusFilter) whereParts.push(eq(tasks.status, statusFilter as any));
   if (priorityFilter) whereParts.push(eq(tasks.priority, priorityFilter as any));
 
-  const whereClause = and(...whereParts);
+  // ✅ SAFETY: if empty, true
+  const whereClause = whereParts.length ? and(...whereParts) : sql`true`;
 
   const orderBy =
     sort === "due"
@@ -133,6 +135,13 @@ export async function GET(req: Request) {
     .from(tasks)
     .where(whereClause);
 
+  const total = Number(countRow?.count ?? 0);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+  // ✅ FIX: clamp page
+  const page = Math.min(pageRaw, totalPages);
+  const offset = (page - 1) * pageSize;
+
   const rows = await db
     .select()
     .from(tasks)
@@ -141,13 +150,13 @@ export async function GET(req: Request) {
     .limit(pageSize)
     .offset(offset);
 
-  const total = Number(countRow?.count ?? 0);
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
-
   return noStoreJson({ tasks: rows, pagination: { page, pageSize, total, totalPages } }, 200);
 }
 
-// POST unchanged (keep your current POST here)
+/**
+ * ✅ neon-http driver does NOT support transactions.
+ * So we do: create task -> (best effort) create notification -> emit events.
+ */
 export async function POST(req: Request) {
   const session = await getSession();
   if (!session) return noStoreJson({ message: "Unauthorized" }, 401);
@@ -181,30 +190,38 @@ export async function POST(req: Request) {
     return noStoreJson({ message: `Invalid priority. Allowed: ${PRIORITY_VALUES.join(", ")}` }, 400);
   }
 
-  const [assignee] = await db.select({ id: users.id }).from(users).where(eq(users.id, assigneeId)).limit(1);
+  const [assignee] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.id, assigneeId))
+    .limit(1);
+
   if (!assignee) return noStoreJson({ message: "Invalid assignedToId/assigneeId (user not found)." }, 400);
 
-  const { task, notif } = await db.transaction(async (tx) => {
-    const created = await tx
-      .insert(tasks)
-      .values({
-        title,
-        description,
-        status: statusRaw,
-        priority: priorityRaw,
-        dueAt,
-        creatorId: session.id,
-        assigneeId,
-      })
-      .returning();
+  // 1) Create task
+  const created = await db
+    .insert(tasks)
+    .values({
+      title,
+      description,
+      status: statusRaw,
+      priority: priorityRaw,
+      dueAt,
+      creatorId: session.id,
+      assigneeId,
+    })
+    .returning();
 
-    const task = created[0];
+  const task = created[0];
+  if (!task) return noStoreJson({ message: "Failed to create task." }, 500);
 
-    let notif: any = null;
-    if (assigneeId !== session.id) {
+  // 2) (Best-effort) notification insert
+  let notif: any = null;
+  if (assigneeId !== session.id) {
+    try {
       const allow = await getTaskAssignedPref(assigneeId);
       if (allow) {
-        const inserted = await tx
+        const inserted = await db
           .insert(notifications)
           .values({
             userId: assigneeId,
@@ -216,11 +233,12 @@ export async function POST(req: Request) {
 
         notif = inserted[0] ?? null;
       }
+    } catch {
+      notif = null;
     }
+  }
 
-    return { task, notif };
-  });
-
+  // 3) Realtime emits (best-effort)
   try {
     await emitWorkspace("task:created", { task });
   } catch {}

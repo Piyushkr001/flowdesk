@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import axios from "axios";
 import toast from "react-hot-toast";
 import {
@@ -19,17 +20,19 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import Link from "next/link";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 
 function apiBase() {
   return process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "";
@@ -118,12 +121,11 @@ export default function TeamPage() {
     [qDebounced, page, pageSize]
   );
 
-  // Initial load + reload when query/page/pagesize changes
   React.useEffect(() => {
     loadTeam();
   }, [loadTeam]);
 
-  // ✅ SSE auto-refresh (throttled, no infinite loop)
+  // ✅ SSE auto-refresh (throttled)
   const loadTeamRef = React.useRef(loadTeam);
   React.useEffect(() => {
     loadTeamRef.current = loadTeam;
@@ -138,24 +140,17 @@ export default function TeamPage() {
 
     const maybeRefresh = () => {
       const now = Date.now();
-
-      // throttle: at most once per 10 seconds
       if (now - lastAutoRefreshRef.current < 10_000) return;
-
-      // avoid overlaps
       if (autoRefreshInFlightRef.current) return;
 
       lastAutoRefreshRef.current = now;
       autoRefreshInFlightRef.current = true;
 
-      void loadTeamRef
-        .current({ silent: true })
-        .finally(() => {
-          autoRefreshInFlightRef.current = false;
-        });
+      void loadTeamRef.current({ silent: true }).finally(() => {
+        autoRefreshInFlightRef.current = false;
+      });
     };
 
-    // If server sends `event: ping`, `onmessage` won't fire, so listen to both.
     es.addEventListener("ping", maybeRefresh as any);
     es.addEventListener("message", maybeRefresh as any);
 
@@ -179,9 +174,7 @@ export default function TeamPage() {
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div className="space-y-1">
             <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
-                Team
-              </h1>
+              <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">Team</h1>
               <Badge variant="secondary" className="rounded-full">
                 {pagination.total} members
               </Badge>
@@ -193,24 +186,13 @@ export default function TeamPage() {
 
           {/* Actions */}
           <div className="grid grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center">
-            <Button
-              variant="outline"
-              className="h-11 rounded-xl"
-              onClick={onRefresh}
-              disabled={refreshing}
-            >
-              {refreshing ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <RefreshCcw className="mr-2 h-4 w-4" />
-              )}
+            <Button variant="outline" className="h-11 rounded-xl" onClick={onRefresh} disabled={refreshing}>
+              {refreshing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCcw className="mr-2 h-4 w-4" />}
               Refresh
             </Button>
 
-            <Button variant="outline" className="h-11 rounded-xl" disabled>
-              <Users className="mr-2 h-4 w-4" />
-              Invite
-            </Button>
+            {/* ✅ Invite dialog */}
+            <InviteDialog onInvited={() => loadTeam({ silent: true })} />
           </div>
         </div>
 
@@ -218,9 +200,7 @@ export default function TeamPage() {
         <Card className="rounded-2xl border-black/5 dark:border-white/10 bg-white/70 dark:bg-slate-950/40 backdrop-blur">
           <CardHeader className="pb-3">
             <CardTitle className="text-base">Browse</CardTitle>
-            <CardDescription>
-              Search by name or email. Updates may refresh automatically.
-            </CardDescription>
+            <CardDescription>Search by name or email. Updates may refresh automatically.</CardDescription>
           </CardHeader>
 
           <CardContent>
@@ -261,10 +241,7 @@ export default function TeamPage() {
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <Badge
-                    variant="outline"
-                    className="h-11 rounded-xl px-3 flex items-center justify-center whitespace-nowrap"
-                  >
+                  <Badge variant="outline" className="h-11 rounded-xl px-3 flex items-center justify-center whitespace-nowrap">
                     <span className="hidden sm:inline">
                       Page {pagination.page} / {pagination.totalPages}
                     </span>
@@ -317,9 +294,7 @@ export default function TeamPage() {
             <Card className="rounded-2xl border-black/5 dark:border-white/10 bg-white/70 dark:bg-slate-950/40 backdrop-blur">
               <CardHeader>
                 <CardTitle className="text-base">No team members found</CardTitle>
-                <CardDescription>
-                  {qDebounced ? "Try a different search term." : "Create users to see them here."}
-                </CardDescription>
+                <CardDescription>{qDebounced ? "Try a different search term." : "Create users to see them here."}</CardDescription>
               </CardHeader>
               <CardContent className="text-sm text-muted-foreground">
                 Tip: Team list is based on your <code className="px-1">users</code> table.
@@ -333,7 +308,6 @@ export default function TeamPage() {
                   className="h-full rounded-2xl border-black/5 dark:border-white/10 bg-white/70 dark:bg-slate-950/40 backdrop-blur flex flex-col overflow-hidden"
                 >
                   <CardHeader className="pb-3">
-                    {/* ✅ FIX: prevent Active badge overflow */}
                     <div className="flex items-start gap-3 min-w-0">
                       <div className="flex items-center gap-3 min-w-0 flex-1">
                         <Avatar className="h-9 w-9 sm:h-10 sm:w-10 shrink-0">
@@ -342,9 +316,7 @@ export default function TeamPage() {
                         </Avatar>
 
                         <div className="min-w-0 flex-1">
-                          <div className="truncate font-semibold text-slate-900 dark:text-slate-50">
-                            {m.name}
-                          </div>
+                          <div className="truncate font-semibold text-slate-900 dark:text-slate-50">{m.name}</div>
                           <div className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground min-w-0">
                             <Mail className="h-3.5 w-3.5 shrink-0" />
                             <span className="truncate">{m.email}</span>
@@ -352,11 +324,7 @@ export default function TeamPage() {
                         </div>
                       </div>
 
-                      <Badge
-                        variant="secondary"
-                        className="rounded-full shrink-0 max-w-24 truncate"
-                        title="Active"
-                      >
+                      <Badge variant="secondary" className="rounded-full shrink-0 max-w-24 truncate" title="Active">
                         Active
                       </Badge>
                     </div>
@@ -369,12 +337,7 @@ export default function TeamPage() {
                       <div className="grid grid-cols-2 gap-2">
                         <Stat icon={<ListChecks className="h-4 w-4" />} label="Assigned" value={m.assignedCount} />
                         <Stat icon={<ClipboardPlus className="h-4 w-4" />} label="Created" value={m.createdCount} />
-                        <Stat
-                          icon={<AlertTriangle className="h-4 w-4" />}
-                          label="Overdue"
-                          value={m.overdueCount}
-                          danger={m.overdueCount > 0}
-                        />
+                        <Stat icon={<AlertTriangle className="h-4 w-4" />} label="Overdue" value={m.overdueCount} danger={m.overdueCount > 0} />
                         <Stat icon={<Users className="h-4 w-4" />} label="Open" value={m.openCount} />
                       </div>
 
@@ -390,8 +353,9 @@ export default function TeamPage() {
                           {m.overdueCount > 0 ? "Needs attention" : "On track"}
                         </Badge>
 
-                        <Button variant="outline" className="rounded-xl w-full sm:w-auto">
-                         <Link href={`/dashboard/team/${m.id}`}>View</Link>
+                        {/* ✅ FIX: proper Shadcn + Link pattern */}
+                        <Button asChild variant="outline" className="rounded-xl w-full sm:w-auto">
+                          <Link href={`/dashboard/team/${m.id}`}>View</Link>
                         </Button>
                       </div>
                     </div>
@@ -428,9 +392,103 @@ function Stat({
         <span className={cn(danger ? "text-red-600 dark:text-red-400" : "")}>{icon}</span>
         <span>{label}</span>
       </div>
-      <div className={cn("mt-1 text-base sm:text-lg font-bold", danger ? "text-red-600 dark:text-red-400" : "")}>
-        {value}
-      </div>
+      <div className={cn("mt-1 text-base sm:text-lg font-bold", danger ? "text-red-600 dark:text-red-400" : "")}>{value}</div>
     </div>
+  );
+}
+
+function InviteDialog({ onInvited }: { onInvited?: () => void }) {
+  const [open, setOpen] = React.useState(false);
+  const [sending, setSending] = React.useState(false);
+
+  const [name, setName] = React.useState("");
+  const [email, setEmail] = React.useState("");
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+
+    if (!name.trim()) return toast.error("Name is required");
+    if (!email.trim()) return toast.error("Email is required");
+
+    setSending(true);
+    const tId = toast.loading("Sending invite...");
+
+    try {
+      await api.post("/api/v1/team/invite", {
+        name: name.trim(),
+        email: email.trim().toLowerCase(),
+      });
+
+      toast.dismiss(tId);
+      toast.success("Invite sent!");
+      setOpen(false);
+      setName("");
+      setEmail("");
+      onInvited?.();
+    } catch (err: any) {
+      toast.dismiss(tId);
+      toast.error(err?.response?.data?.message || "Failed to send invite.");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="outline" className="h-11 rounded-xl">
+          <Users className="mr-2 h-4 w-4" />
+          Invite
+        </Button>
+      </DialogTrigger>
+
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Invite a team member</DialogTitle>
+          <DialogDescription>
+            We’ll create the user and email them an invite link.
+          </DialogDescription>
+        </DialogHeader>
+
+        <form onSubmit={onSubmit} className="space-y-4">
+          <div className="grid gap-2">
+            <Label htmlFor="invite-name">Full name</Label>
+            <Input
+              id="invite-name"
+              className="h-11 rounded-xl"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g., Rahul Kumar"
+            />
+          </div>
+
+          <div className="grid gap-2">
+            <Label htmlFor="invite-email">Email</Label>
+            <Input
+              id="invite-email"
+              type="email"
+              className="h-11 rounded-xl"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="e.g., rahul@example.com"
+            />
+          </div>
+
+          <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-2">
+            <Button type="button" variant="outline" className="h-11 rounded-xl" onClick={() => setOpen(false)} disabled={sending}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              className="h-11 rounded-xl bg-linear-to-r from-sky-500 to-indigo-600 text-white hover:opacity-95"
+              disabled={sending}
+            >
+              {sending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Send invite
+            </Button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }

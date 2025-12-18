@@ -1,4 +1,3 @@
-// app/dashboard/reports/page.tsx
 "use client";
 
 import * as React from "react";
@@ -79,6 +78,17 @@ function endOfToday() {
   const d = new Date();
   d.setHours(23, 59, 59, 999);
   return d;
+}
+
+function downloadBlob(filename: string, blob: Blob) {
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
 }
 
 function StatPill({
@@ -172,8 +182,6 @@ export default function ReportsPage() {
       if (!silent) setLoading(true);
 
       try {
-        // You can implement this backend route later:
-        // GET /api/v1/reports/summary?from=YYYY-MM-DD&to=YYYY-MM-DD&q=&status=&priority=
         const { data } = await api.get<ReportSummary>("/api/v1/reports/summary", {
           params: {
             q: q || undefined,
@@ -205,9 +213,31 @@ export default function ReportsPage() {
     setRefreshing(false);
   }
 
-  function onExportCsv() {
-    // Placeholder: if you want, we can wire this to `/api/v1/reports/export.csv`
-    toast("Export is coming soon.");
+  async function onExportCsv() {
+    try {
+      toast.loading("Preparing CSV...", { id: "csv" });
+
+      const res = await api.get("/api/v1/reports/export.csv", {
+        params: {
+          q: q || undefined,
+          status: status === "all" ? undefined : status,
+          priority: priority === "all" ? undefined : priority,
+          from,
+          to,
+        },
+        responseType: "blob",
+      });
+
+      const blob = new Blob([res.data], { type: "text/csv;charset=utf-8" });
+
+      const safeFrom = String(from).replaceAll(":", "-");
+      const safeTo = String(to).replaceAll(":", "-");
+      downloadBlob(`reports_${safeFrom}_to_${safeTo}.csv`, blob);
+
+      toast.success("CSV downloaded.", { id: "csv" });
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || "CSV export failed.", { id: "csv" });
+    }
   }
 
   const totalAll = summary?.totals.all ?? 0;
@@ -231,7 +261,7 @@ export default function ReportsPage() {
             </p>
           </div>
 
-          {/* Actions (flex + responsive) */}
+          {/* Actions */}
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
             <Button
               variant="outline"
@@ -266,7 +296,6 @@ export default function ReportsPage() {
           </CardHeader>
 
           <CardContent className="space-y-3">
-            {/* Row 1: Search + Status + Priority */}
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
               <div className="relative flex-1">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -279,10 +308,7 @@ export default function ReportsPage() {
               </div>
 
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                <Select
-                  value={status}
-                  onValueChange={(v) => setStatus(v as any)}
-                >
+                <Select value={status} onValueChange={(v) => setStatus(v as any)}>
                   <SelectTrigger className="h-11 w-full sm:w-50 rounded-xl">
                     <SelectValue placeholder="Status" />
                   </SelectTrigger>
@@ -295,10 +321,7 @@ export default function ReportsPage() {
                   </SelectContent>
                 </Select>
 
-                <Select
-                  value={priority}
-                  onValueChange={(v) => setPriority(v as any)}
-                >
+                <Select value={priority} onValueChange={(v) => setPriority(v as any)}>
                   <SelectTrigger className="h-11 w-full sm:w-50 rounded-xl">
                     <SelectValue placeholder="Priority" />
                   </SelectTrigger>
@@ -313,7 +336,6 @@ export default function ReportsPage() {
               </div>
             </div>
 
-            {/* Row 2: Date range */}
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
               <div className="flex flex-1 flex-col gap-1">
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -339,10 +361,7 @@ export default function ReportsPage() {
                 />
               </div>
 
-              <Button
-                className="h-11 rounded-xl sm:self-end"
-                onClick={() => load()}
-              >
+              <Button className="h-11 rounded-xl sm:self-end" onClick={() => load()}>
                 <BarChart3 className="mr-2 h-4 w-4" />
                 Apply
               </Button>
@@ -388,7 +407,6 @@ export default function ReportsPage() {
           </Card>
         ) : (
           <div className="flex flex-col gap-4 lg:flex-row">
-            {/* Left: Summary */}
             <div className="flex w-full flex-col gap-4 lg:w-105">
               <Card className="rounded-2xl border-black/5 dark:border-white/10 bg-white/70 dark:bg-slate-950/40 backdrop-blur">
                 <CardHeader className="pb-3">
@@ -426,8 +444,7 @@ export default function ReportsPage() {
                   <Separator />
 
                   <div className="text-xs text-muted-foreground">
-                    Tip: If you don’t have a reports endpoint yet, we can implement
-                    it using your <code className="px-1">tasks</code> table filters.
+                    Export uses the same filters and date range as this page.
                   </div>
                 </CardContent>
               </Card>
@@ -454,7 +471,10 @@ export default function ReportsPage() {
                             {u.email}
                           </div>
                         </div>
-                        <Badge variant="secondary" className="rounded-full tabular-nums">
+                        <Badge
+                          variant="secondary"
+                          className="rounded-full tabular-nums"
+                        >
                           {u.count}
                         </Badge>
                       </div>
@@ -468,7 +488,6 @@ export default function ReportsPage() {
               </Card>
             </div>
 
-            {/* Right: Breakdown */}
             <div className="flex w-full flex-1 flex-col gap-4">
               <Card className="rounded-2xl border-black/5 dark:border-white/10 bg-white/70 dark:bg-slate-950/40 backdrop-blur">
                 <CardHeader className="pb-3">
@@ -479,10 +498,26 @@ export default function ReportsPage() {
                   <div className="flex flex-col gap-3">
                     <div className="text-sm font-semibold">By Status</div>
                     <div className="flex flex-col gap-3">
-                      <MiniBar label="To Do" value={summary.byStatus.todo || 0} total={totalAll} />
-                      <MiniBar label="In Progress" value={summary.byStatus.in_progress || 0} total={totalAll} />
-                      <MiniBar label="Review" value={summary.byStatus.review || 0} total={totalAll} />
-                      <MiniBar label="Completed" value={summary.byStatus.completed || 0} total={totalAll} />
+                      <MiniBar
+                        label="To Do"
+                        value={summary.byStatus.todo || 0}
+                        total={totalAll}
+                      />
+                      <MiniBar
+                        label="In Progress"
+                        value={summary.byStatus.in_progress || 0}
+                        total={totalAll}
+                      />
+                      <MiniBar
+                        label="Review"
+                        value={summary.byStatus.review || 0}
+                        total={totalAll}
+                      />
+                      <MiniBar
+                        label="Completed"
+                        value={summary.byStatus.completed || 0}
+                        total={totalAll}
+                      />
                     </div>
                   </div>
 
@@ -491,10 +526,26 @@ export default function ReportsPage() {
                   <div className="flex flex-col gap-3">
                     <div className="text-sm font-semibold">By Priority</div>
                     <div className="flex flex-col gap-3">
-                      <MiniBar label="Low" value={summary.byPriority.low || 0} total={totalAll} />
-                      <MiniBar label="Medium" value={summary.byPriority.medium || 0} total={totalAll} />
-                      <MiniBar label="High" value={summary.byPriority.high || 0} total={totalAll} />
-                      <MiniBar label="Urgent" value={summary.byPriority.urgent || 0} total={totalAll} />
+                      <MiniBar
+                        label="Low"
+                        value={summary.byPriority.low || 0}
+                        total={totalAll}
+                      />
+                      <MiniBar
+                        label="Medium"
+                        value={summary.byPriority.medium || 0}
+                        total={totalAll}
+                      />
+                      <MiniBar
+                        label="High"
+                        value={summary.byPriority.high || 0}
+                        total={totalAll}
+                      />
+                      <MiniBar
+                        label="Urgent"
+                        value={summary.byPriority.urgent || 0}
+                        total={totalAll}
+                      />
                     </div>
                   </div>
                 </CardContent>

@@ -68,10 +68,10 @@ async function getTaskIfAllowed(taskId: string, userId: string) {
   return rows[0] ?? null;
 }
 
-async function getPrefsMapAny(executor: any, userIds: string[]) {
+async function getPrefsMap(userIds: string[]) {
   if (!userIds.length) return new Map<string, { taskAssigned: boolean; taskUpdated: boolean }>();
 
-  const rows = await executor
+  const rows = await db
     .select({
       userId: notificationPrefs.userId,
       taskAssigned: notificationPrefs.taskAssigned,
@@ -85,11 +85,12 @@ async function getPrefsMapAny(executor: any, userIds: string[]) {
   return m;
 }
 
-export async function GET(_req: Request, { params }: { params: { id: string } }) {
+/** ✅ FIX: params is a Promise in Next.js route handlers */
+export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
   const session = await getSession();
   if (!session) return noStoreJson({ message: "Unauthorized" }, 401);
 
-  const id = params?.id;
+  const { id } = await ctx.params;
   if (!id) return noStoreJson({ message: "Missing task id." }, 400);
 
   const task = await getTaskIfAllowed(id, session.id);
@@ -98,11 +99,16 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
   return noStoreJson({ task }, 200);
 }
 
-export async function PATCH(req: Request, { params }: { params: { id: string } }) {
+/**
+ * ✅ FIXES:
+ * 1) params Promise -> await ctx.params
+ * 2) neon-http has NO transactions -> update first, then best-effort notifications
+ */
+export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const session = await getSession();
   if (!session) return noStoreJson({ message: "Unauthorized" }, 401);
 
-  const id = params?.id;
+  const { id } = await ctx.params;
   if (!id) return noStoreJson({ message: "Missing task id." }, 400);
 
   const body = await req.json().catch(() => ({}));
@@ -187,28 +193,31 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
   patch.updatedAt = sql`now()`;
 
-  // --- Update + notifications atomically ---
-  const result = await db.transaction(async (tx) => {
-    const updated = await tx
-      .update(tasks)
-      .set(patch)
-      .where(and(eq(tasks.id, id), or(eq(tasks.creatorId, session.id), eq(tasks.assigneeId, session.id))))
-      .returning();
+  // ✅ 1) Update task (no transaction)
+  const updatedRows = await db
+    .update(tasks)
+    .set(patch)
+    .where(and(eq(tasks.id, id), or(eq(tasks.creatorId, session.id), eq(tasks.assigneeId, session.id))))
+    .returning();
 
-    const task = updated[0];
-    if (!task) return { task: null as any, notifs: [] as any[] };
+  const task = updatedRows[0];
+  if (!task) return noStoreJson({ message: "Task not found." }, 404);
 
-    const prefUsers = uniq([task.creatorId, task.assigneeId, oldAssigneeId]);
-    const prefsMap = await getPrefsMapAny(tx, prefUsers);
-    const prefsOf = (uid: string) => prefsMap.get(uid) ?? { taskAssigned: true, taskUpdated: true };
+  // ✅ 2) Build recipients + prefs
+  const recipients = uniq([task.creatorId, task.assigneeId, oldAssigneeId, session.id]);
+  const prefUsers = uniq([task.creatorId, task.assigneeId, oldAssigneeId]);
+  const prefsMap = await getPrefsMap(prefUsers);
+  const prefsOf = (uid: string) => prefsMap.get(uid) ?? { taskAssigned: true, taskUpdated: true };
 
-    const createdNotifs: any[] = [];
+  // ✅ 3) Best-effort notifications
+  const createdNotifs: Array<{ userId: string; notification: any }> = [];
 
-    // Mandatory-safe: always persist assignment notification on reassignment
-    if (willReassign && patch.assigneeId) {
-      const newAssigneeId = patch.assigneeId as string;
-
-      const [notif] = await tx
+  // assignment notif (respect prefs OR always? you wanted mandatory-safe; keeping mandatory)
+  if (willReassign && patch.assigneeId) {
+    const newAssigneeId = patch.assigneeId as string;
+    try {
+      // If you want to respect taskAssigned pref, wrap in if (prefsOf(newAssigneeId).taskAssigned)
+      const [notif] = await db
         .insert(notifications)
         .values({
           userId: newAssigneeId,
@@ -219,15 +228,17 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         .returning();
 
       if (notif) createdNotifs.push({ userId: newAssigneeId, notification: notif });
-    }
+    } catch {}
+  }
 
-    // Optional: notify assignee on status/priority change (prefs-respecting)
-    if ((statusChanged || priorityChanged) && task.assigneeId && task.assigneeId !== session.id) {
+  // update notif (prefs-respecting)
+  if ((statusChanged || priorityChanged) && task.assigneeId && task.assigneeId !== session.id) {
+    try {
       if (prefsOf(task.assigneeId).taskUpdated) {
         const what =
           statusChanged && priorityChanged ? "Status and priority" : statusChanged ? "Status" : "Priority";
 
-        const [notif] = await tx
+        const [notif] = await db
           .insert(notifications)
           .values({
             userId: task.assigneeId,
@@ -239,17 +250,10 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
         if (notif) createdNotifs.push({ userId: task.assigneeId, notification: notif });
       }
-    }
+    } catch {}
+  }
 
-    return { task, notifs: createdNotifs };
-  });
-
-  const task = result.task;
-  if (!task) return noStoreJson({ message: "Task not found." }, 404);
-
-  const recipients = uniq([task.creatorId, task.assigneeId, oldAssigneeId, session.id]);
-
-  // --- Realtime emits after commit ---
+  // ✅ 4) Realtime emits (best-effort)
   try {
     await emitUsers(recipients, "task:updated", {
       task,
@@ -260,7 +264,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     });
   } catch {}
 
-  for (const n of result.notifs) {
+  for (const n of createdNotifs) {
     try {
       await emitUser(n.userId, "notification:new", { notification: n.notification });
     } catch {}
@@ -269,11 +273,12 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   return noStoreJson({ ok: true, task }, 200);
 }
 
-export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
+/** ✅ FIX: params Promise */
+export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string }> }) {
   const session = await getSession();
   if (!session) return noStoreJson({ message: "Unauthorized" }, 401);
 
-  const id = params?.id;
+  const { id } = await ctx.params;
   if (!id) return noStoreJson({ message: "Missing task id." }, 400);
 
   const existing = await getTaskIfAllowed(id, session.id);
