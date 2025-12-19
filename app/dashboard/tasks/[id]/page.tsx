@@ -20,7 +20,13 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -90,14 +96,23 @@ function fmtDate(iso: string | null) {
 }
 
 function statusPill(s: TaskStatus) {
-  if (s === "done") return <Badge className="rounded-full" variant="secondary">Done</Badge>;
+  if (s === "done")
+    return (
+      <Badge className="rounded-full" variant="secondary">
+        Done
+      </Badge>
+    );
   if (s === "in_progress")
     return (
       <Badge className="rounded-full bg-linear-to-r from-sky-500 to-indigo-600 text-white">
         In Progress
       </Badge>
     );
-  return <Badge className="rounded-full" variant="outline">To do</Badge>;
+  return (
+    <Badge className="rounded-full" variant="outline">
+      To do
+    </Badge>
+  );
 }
 
 function priorityPill(p: TaskPriority) {
@@ -113,25 +128,48 @@ function priorityPill(p: TaskPriority) {
         Medium
       </Badge>
     );
-  return <Badge className="rounded-full" variant="secondary">Low</Badge>;
+  return (
+    <Badge className="rounded-full" variant="secondary">
+      Low
+    </Badge>
+  );
 }
 
 export default function TaskDetailPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
-  const taskId = params?.id;
+
+  // Normalize id to a string once
+  const rawId = params?.id;
+  const taskId = typeof rawId === "string" ? rawId : Array.isArray(rawId) ? rawId[0] : "";
 
   const base = apiBase();
+
+  /**
+   * ✅ Critical fix:
+   * If route is /dashboard/tasks/new, Next will render this [id] page with id="new".
+   * Redirect to the real "new task" page and DO NOT call /api/v1/tasks/new
+   */
+  React.useEffect(() => {
+    if (taskId === "new") {
+      router.replace("/dashboard/tasks/new");
+    }
+  }, [taskId, router]);
+
+  // If taskId is invalid or "new", we should skip network work.
+  const canLoad = Boolean(taskId) && taskId !== "new";
 
   // realtime refresh
   const [tick, setTick] = React.useState(0);
   React.useEffect(() => {
+    if (!canLoad) return;
+
     const url = `${base}/api/v1/realtime/dashboard`;
     const es = new EventSource(url, { withCredentials: true } as any);
     es.onmessage = () => setTick((t) => t + 1);
     es.onerror = () => {};
     return () => es.close();
-  }, [base]);
+  }, [base, canLoad]);
 
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
@@ -156,7 +194,7 @@ export default function TaskDetailPage() {
   }, []);
 
   const loadAll = React.useCallback(async () => {
-    if (!taskId) return;
+    if (!canLoad) return;
 
     setLoading(true);
     try {
@@ -166,7 +204,9 @@ export default function TaskDetailPage() {
       ]);
 
       const t: TaskDetail | null = taskRes.data?.task ?? null;
-      const members: TeamUser[] = Array.isArray(teamRes.data?.members) ? teamRes.data.members : [];
+      const members: TeamUser[] = Array.isArray(teamRes.data?.members)
+        ? teamRes.data.members
+        : [];
 
       setTask(t);
       setTeam(members);
@@ -178,13 +218,15 @@ export default function TaskDetailPage() {
     } finally {
       setLoading(false);
     }
-  }, [taskId, hydrateForm]);
+  }, [taskId, hydrateForm, canLoad]);
 
   React.useEffect(() => {
+    if (!canLoad) return;
     loadAll();
-  }, [loadAll, tick]);
+  }, [loadAll, tick, canLoad]);
 
   async function onRefresh() {
+    if (!canLoad) return;
     setRefreshing(true);
     await loadAll();
     setRefreshing(false);
@@ -270,7 +312,12 @@ export default function TaskDetailPage() {
           </div>
 
           <div className="flex items-center gap-2">
-            <Button variant="outline" className="rounded-xl" onClick={onRefresh} disabled={refreshing}>
+            <Button
+              variant="outline"
+              className="rounded-xl"
+              onClick={onRefresh}
+              disabled={refreshing || !canLoad}
+            >
               {refreshing ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : (
@@ -289,11 +336,15 @@ export default function TaskDetailPage() {
         </div>
 
         {/* Body */}
-        {loading ? (
+        {!canLoad ? (
           <Card className="mt-6 rounded-2xl border-black/5 dark:border-white/10 bg-white/70 dark:bg-slate-950/40 backdrop-blur">
             <CardContent className="py-10 text-sm text-muted-foreground">
-              Loading task…
+              Redirecting…
             </CardContent>
+          </Card>
+        ) : loading ? (
+          <Card className="mt-6 rounded-2xl border-black/5 dark:border-white/10 bg-white/70 dark:bg-slate-950/40 backdrop-blur">
+            <CardContent className="py-10 text-sm text-muted-foreground">Loading task…</CardContent>
           </Card>
         ) : !task ? (
           <Card className="mt-6 rounded-2xl border-black/5 dark:border-white/10 bg-white/70 dark:bg-slate-950/40 backdrop-blur">
@@ -309,7 +360,10 @@ export default function TaskDetailPage() {
                   </div>
 
                   <div className="mt-4 flex flex-col sm:flex-row gap-2">
-                    <Button asChild className="rounded-xl bg-linear-to-r from-sky-500 to-indigo-600 text-white hover:opacity-95">
+                    <Button
+                      asChild
+                      className="rounded-xl bg-linear-to-r from-sky-500 to-indigo-600 text-white hover:opacity-95"
+                    >
                       <Link href="/dashboard/tasks">Go to Tasks</Link>
                     </Button>
                     <Button variant="outline" className="rounded-xl" onClick={() => router.back()}>
@@ -346,7 +400,11 @@ export default function TaskDetailPage() {
                   <div className="flex flex-col sm:flex-row gap-3">
                     <div className="flex-1 grid gap-2">
                       <Label>Status</Label>
-                      <Select value={status} onValueChange={(v: string) => setStatus(v as TaskStatus)} disabled={saving}>
+                      <Select
+                        value={status}
+                        onValueChange={(v: string) => setStatus(v as TaskStatus)}
+                        disabled={saving}
+                      >
                         <SelectTrigger className="h-11 rounded-xl">
                           <SelectValue placeholder="Select status" />
                         </SelectTrigger>
@@ -360,7 +418,11 @@ export default function TaskDetailPage() {
 
                     <div className="flex-1 grid gap-2">
                       <Label>Priority</Label>
-                      <Select value={priority} onValueChange={(v: string) => setPriority(v as TaskPriority)} disabled={saving}>
+                      <Select
+                        value={priority}
+                        onValueChange={(v: string) => setPriority(v as TaskPriority)}
+                        disabled={saving}
+                      >
                         <SelectTrigger className="h-11 rounded-xl">
                           <SelectValue placeholder="Select priority" />
                         </SelectTrigger>
@@ -396,7 +458,7 @@ export default function TaskDetailPage() {
                       <Label>Assignee</Label>
                       <Select
                         value={assigneeId}
-                        onValueChange={(v: React.SetStateAction<string>) => setAssigneeId(v)}
+                        onValueChange={(v: string) => setAssigneeId(v)}
                         disabled={saving}
                       >
                         <SelectTrigger className="h-11 rounded-xl">
@@ -471,13 +533,19 @@ export default function TaskDetailPage() {
                 <MetaRow
                   icon={<User2 className="h-4 w-4" />}
                   label="Assignee"
-                  value={task.assignee ? `${task.assignee.name} (${task.assignee.email})` : "Unassigned"}
+                  value={
+                    task.assignee
+                      ? `${task.assignee.name} (${task.assignee.email})`
+                      : "Unassigned"
+                  }
                 />
 
                 <MetaRow
                   icon={<User2 className="h-4 w-4" />}
                   label="Creator"
-                  value={task.creator ? `${task.creator.name} (${task.creator.email})` : "—"}
+                  value={
+                    task.creator ? `${task.creator.name} (${task.creator.email})` : "—"
+                  }
                 />
 
                 <Separator />

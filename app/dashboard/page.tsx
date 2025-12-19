@@ -29,14 +29,39 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 
+/**
+ * ✅ Safer base URL logic:
+ * - If NEXT_PUBLIC_API_URL is NOT set => use same-origin (empty string), cookies work by default.
+ * - If it IS set => normalize and avoid accidental "/api/v1" duplication.
+ *
+ * Examples:
+ *  NEXT_PUBLIC_API_URL="https://flowdesk-ten-neon.vercel.app"         => baseURL = "https://flowdesk-ten-neon.vercel.app"
+ *  NEXT_PUBLIC_API_URL="https://flowdesk-ten-neon.vercel.app/"        => baseURL = "https://flowdesk-ten-neon.vercel.app"
+ *  NEXT_PUBLIC_API_URL="https://flowdesk-ten-neon.vercel.app/api/v1"  => baseURL = "https://flowdesk-ten-neon.vercel.app"
+ *  NEXT_PUBLIC_API_URL="https://flowdesk-ten-neon.vercel.app/api"     => baseURL = "https://flowdesk-ten-neon.vercel.app"
+ */
 function apiBase() {
-  return process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "";
+  const raw = process.env.NEXT_PUBLIC_API_URL?.trim();
+  if (!raw) return ""; // same-origin
+
+  const noSlash = raw.replace(/\/$/, "");
+  // strip accidental suffixes so we don't end up with .../api/v1 + /api/v1/...
+  const stripped = noSlash
+    .replace(/\/api\/v1$/i, "")
+    .replace(/\/api$/i, "");
+
+  return stripped;
 }
 
 const api = axios.create({
   baseURL: apiBase(),
   withCredentials: true,
+  headers: {
+    Accept: "application/json",
+  },
 });
+
+const DASHBOARD_OVERVIEW_ENDPOINT = "/api/v1/dashboard/overview";
 
 /** ✅ New enums + tolerate legacy "done" */
 type TaskStatus = "todo" | "in_progress" | "review" | "completed" | "done";
@@ -168,7 +193,7 @@ export default function DashboardPage() {
     else setRefreshing(true);
 
     try {
-      const res = await api.get<DashboardOverview>("/api/v1/dashboard/overview");
+      const res = await api.get<DashboardOverview>(DASHBOARD_OVERVIEW_ENDPOINT);
       setData(res.data);
     } catch (err: any) {
       const msg = err?.response?.data?.message || "Failed to load dashboard.";
