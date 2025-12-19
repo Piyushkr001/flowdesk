@@ -10,8 +10,18 @@ const app = express();
 // avoid accidental huge payloads
 app.use(express.json({ limit: "1mb" }));
 
-const ORIGIN_RAW = process.env.CORS_ORIGIN || "http://localhost:3000" || "https://flowdesk-72sm.vercel.app/";
-const ORIGINS = ORIGIN_RAW.split(",").map((s) => s.trim()).filter(Boolean);
+/**
+ * ✅ FIX: your previous OR chain always stopped at "http://localhost:3000"
+ * Now: env can be comma-separated, and we provide a correct multi-origin default.
+ */
+const ORIGIN_RAW =
+  process.env.CORS_ORIGIN ??
+  "http://localhost:3000,https://flowdesk-72sm.vercel.app,https://flowdesk-ten-neon.vercel.app";
+
+const ORIGINS = ORIGIN_RAW
+  .split(",")
+  .map((s) => s.trim().replace(/\/$/, "")) // remove trailing slash
+  .filter(Boolean);
 
 app.use(
   cors({
@@ -60,6 +70,7 @@ function uniq(ids: Array<string | null | undefined>) {
 
 io.use(async (socket, next) => {
   try {
+    // token must be passed from client: io(url, { auth: { token } })
     const token = (socket.handshake.auth as any)?.token as string | undefined;
     const { userId } = await verifySocketToken(token);
 
@@ -111,7 +122,7 @@ app.post("/emit", (req, res) => {
     return res.json({ ok: true });
   }
 
-  // ✅ NEW: batch emit for emitUsers([...])
+  // ✅ batch emit for emitUsers([...])
   if (scope === "users") {
     const userIds = body.userIds as unknown;
 
@@ -124,7 +135,9 @@ app.post("/emit", (req, res) => {
     );
 
     if (ids.length === 0) {
-      return res.status(400).json({ message: "userIds must contain at least one valid id" });
+      return res
+        .status(400)
+        .json({ message: "userIds must contain at least one valid id" });
     }
 
     const rooms = ids.map(userRoom);
